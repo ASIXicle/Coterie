@@ -1,0 +1,12 @@
+[Unit]
+Description=memory mail hygiene: weekly sweep of stale unread messages
+
+[Timer]
+# Monday 04:00 local — after the Sunday 03:40 hook-detect scan, so the
+# two housekeeping jobs don't fight for the memory server at once.
+OnCalendar=Mon 04:00
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

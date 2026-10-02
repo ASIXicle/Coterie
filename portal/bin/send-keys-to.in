@@ -1,0 +1,51 @@
+#!/bin/bash
+# send-keys-to -- the ONLY thing the orchestrator may run as another agent's user.
+#   send-keys-to <session> <literal text>
+# Types <literal text> into tmux session <session> as one bracketed paste, then Enter. Refuses
+# control bytes (only newline and tab below 0x20; no ESC, no DEL) -- literal keys are still keys.
+# Rendered from portal/bin/send-keys-to.in by install/render-agents.sh (@SESSION@ baked in),
+# installed root:root 0755 at /usr/local/bin/send-keys-to by install/deploy.sh, and named
+# in sudoers INSTEAD of tmux: `<orchestrator> ALL=(<agents>) NOPASSWD: /usr/local/bin/send-keys-to @SESSION@ *`.
+#
+# Why (cutover item 11, 2026-09-11): sudoers' `tmux send-keys *` let the caller build
+# `send-keys -t s text \; run-shell "bash -i"` -- a shell as the target user with no
+# transcript. Here the payload is ALWAYS one argument after `--`, so `;`, run-shell,
+# new-window and newlines are keystrokes, never commands. The hole closes by argv shape;
+# nothing inspects the text. Exactly two arguments; the session must be the rendered literal.
+# Audit: one syslog line per call (auth.info) with caller, target, session, bytes, sha256 --
+# a hash, not the text: prompts carry private material and the pane is the transcript.
+set -euo pipefail
+SESSION='@SESSION@'
+TMUX_BIN=/usr/bin/tmux
+unset TMUX TMUX_TMPDIR   # never inherit a caller's socket path or socket dir; the target user's default server is the only target
+LOGGER=/usr/bin/logger
+umask 077
+
+fail() { echo "send-keys-to: $*" >&2; exit 2; }
+[ "$#" -eq 2 ] || fail "usage: send-keys-to <session> <literal text> (got $# args)"
+[ "$1" = "$SESSION" ] || fail "session must be '$SESSION'"
+[ -x "$TMUX_BIN" ] || fail "$TMUX_BIN missing"
+
+text=$2
+# Literal keys are still keys: a C0 byte or ESC reaches the pane's program as ^C / Esc / ^D and
+# can end it (review, 2026-09-11, observed on a scratch pane). So the wrapper owns the framing:
+# plain text in; only \n and \t below 0x20; no 0x7f; no ESC. Refused payloads exit 2 and touch
+# nothing. The bracketed-paste envelope is added HERE, never by the caller.
+if [ -n "$(printf '%s' "$text" | LC_ALL=C tr -d '\n\t' | LC_ALL=C tr -d '\040-\176\200-\377')" ]; then
+  fail "payload contains control bytes (only newline and tab are allowed below 0x20; no ESC, no DEL)"
+fi
+# C1 controls (U+0080-U+009F, UTF-8 c2 80..c2 9f: CSI, NEL, ...) -- absolute /usr/bin/grep under
+# LC_ALL=C on purpose: a bare `grep` may be ugrep, which reads the pattern as Unicode and fails
+# open; tr cannot express "0xC2 followed by 0x80-0x9F" (its ranges are byte-wise). Tested.
+if printf '%s' "$text" | LC_ALL=C /usr/bin/grep -q $'\xc2[\x80-\x9f]'; then
+  fail "payload contains a C1 control character (U+0080-U+009F)"
+fi
+bytes=${#text}
+sum=$(printf '%s' "$text" | /usr/bin/sha256sum | cut -c1-16)
+"$LOGGER" -t send-keys-to -p auth.info -- \
+  "caller=${SUDO_USER:-$(id -un)} target=$(id -un) session=$SESSION bytes=$bytes sha256=$sum" || true
+
+# literal keystrokes, one argument, nothing after it can be a tmux command
+/usr/bin/timeout 15 "$TMUX_BIN" send-keys -t "$SESSION" -l -- $'\e[200~'"$text"$'\e[201~'
+sleep 0.4
+/usr/bin/timeout 15 "$TMUX_BIN" send-keys -t "$SESSION" Enter

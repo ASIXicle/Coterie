@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 850" width="900" height="850" role="img" aria-labelledby="ttl">
+  <title id="ttl">How an agent comes back</title>
+  <defs>
+    <marker id="bA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7f8b94"></path></marker>
+    <marker id="bC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a14b3e"></path></marker>
+  </defs>
+  <rect width="900" height="850" fill="#f3f5f7"></rect>
+  <text x="16" y="30" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#616c75">O operator (or the Matron endpoint) · P agent pane · M memory server · H boot history · G git host</text>
+  <text x="16" y="48" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#9aa5ad">twelve steps; the order is the point</text>
+
+  <g fill="#fafcfe" stroke="#ccd5dc">
+    <circle cx="580" cy="74" r="13"></circle><circle cx="652" cy="74" r="13"></circle><circle cx="724" cy="74" r="13"></circle><circle cx="796" cy="74" r="13"></circle><circle cx="868" cy="74" r="13"></circle>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="11" font-weight="700" fill="#1e2328" text-anchor="middle">
+    <text x="580" y="78">O</text><text x="652" y="78">P</text><text x="724" y="78">M</text><text x="796" y="78">H</text><text x="868" y="78">G</text>
+  </g>
+  <g stroke="#ccd5dc" stroke-dasharray="3 4">
+    <path d="M580,88 L580,806"></path><path d="M652,88 L652,806"></path><path d="M724,88 L724,806"></path><path d="M796,88 L796,806"></path><path d="M868,88 L868,806"></path>
+  </g>
+  <g stroke="#dbe2e8">
+    <path d="M12,110 L884,110"></path><path d="M12,168 L884,168"></path><path d="M12,226 L884,226"></path><path d="M12,284 L884,284"></path><path d="M12,342 L884,342"></path><path d="M12,400 L884,400"></path><path d="M12,458 L884,458"></path><path d="M12,516 L884,516"></path><path d="M12,574 L884,574"></path><path d="M12,632 L884,632"></path><path d="M12,690 L884,690"></path><path d="M12,748 L884,748"></path><path d="M12,806 L884,806"></path>
+  </g>
+
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#616c75">
+    <text x="16" y="132">01</text><text x="16" y="190">02</text><text x="16" y="248">03</text><text x="16" y="306">04</text>
+    <text x="16" y="422">06</text><text x="16" y="480">07</text><text x="16" y="538">08</text>
+    <text x="16" y="654">10</text><text x="16" y="712">11</text><text x="16" y="770">12</text>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#a14b3e">
+    <text x="16" y="364">05</text><text x="16" y="379">AUDIT</text>
+    <text x="16" y="596">09</text><text x="16" y="611">CHECK</text>
+  </g>
+  <g font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">
+    <text x="60" y="132">A reboot-init prompt reaches the pane</text>
+    <text x="60" y="190">The pane confirms its own seat</text>
+    <text x="60" y="248">chorus_init(agent, project)</text>
+    <text x="60" y="306">The server assembles the payload</text>
+    <text x="60" y="364">Per entry, three hashes are recorded</text>
+    <text x="60" y="422">Append the manifest sha256 to this agent's boot log</text>
+    <text x="60" y="480">Payload and manifest come back</text>
+    <text x="60" y="538">chorus_manifest(agent)</text>
+    <text x="60" y="596">Substrate check: the running model is the one the identity names</text>
+    <text x="60" y="654">amq_check(agent)</text>
+    <text x="60" y="712">Pull every tracked repo</text>
+    <text x="60" y="770">Report to the operator, then take direction</text>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">
+    <text x="60" y="148">a pointer: these lines, at this commit, in its own clone</text>
+    <text x="60" y="206">whoami · hostname · id</text>
+    <text x="60" y="264">the pane asks the memory server for its boot</text>
+    <text x="60" y="322">own identity (full) · peers' identities (truncated) · team state</text>
+    <text x="60" y="335">standing directives · unread mail · recent handoffs</text>
+    <text x="60" y="380">stored at write · read now · shipped after trimming</text>
+    <text x="60" y="393">all three sit in the manifest; any gap is visible</text>
+    <text x="60" y="496">or a file path if the payload exceeds the tool-result cap</text>
+    <text x="60" y="554">the manifest alone always fits</text>
+    <text x="60" y="612">if not, report and hold</text>
+    <text x="60" y="670">read bodies, not subjects</text>
+    <text x="60" y="728">cite tips from git log, never from the prompt</text>
+    <text x="60" y="786">seat · repo tips · mail awaiting reply · anomalies</text>
+  </g>
+
+  <g fill="none" stroke="#7f8b94" stroke-width="1.3" marker-end="url(#bA)">
+    <path d="M580,140 L652,140"></path>
+    <path d="M652,198 L668,198 L668,214 L654,214"></path>
+    <path d="M652,256 L724,256"></path>
+    <path d="M724,314 L740,314 L740,330 L726,330"></path>
+    <path d="M724,430 L796,430"></path>
+    <path d="M652,546 L724,546"></path>
+    <path d="M652,662 L724,662"></path>
+    <path d="M652,720 L868,720"></path>
+    <path d="M652,778 L580,778"></path>
+  </g>
+  <path d="M724,488 L652,488" fill="none" stroke="#7f8b94" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#bA)"></path>
+  <g fill="none" stroke="#a14b3e" stroke-width="1.5" marker-end="url(#bC)">
+    <path d="M724,372 L740,372 L740,388 L726,388"></path>
+    <path d="M652,604 L668,604 L668,620 L654,620"></path>
+  </g>
+  <text x="16" y="834" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#616c75">step 09 can stop a boot; step 05 is the audit trail; everything else is fetching</text>
+  </svg>

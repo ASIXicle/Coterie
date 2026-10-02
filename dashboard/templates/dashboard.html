@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en" data-density="cozy" data-palette="porcelain">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>persMEM</title>
+  <meta name="theme-color" content="#f7f8fa">
+  <!-- tokens first, then this surface's own stylesheet (MIGRATION.md load order) -->
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="stylesheet" href="/static/tailwind.css">
+  <!-- this surface's own component shapes (cards, padding, markdown bodies); no tokens in it -->
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <div id="root">
+    <div class="flex items-center justify-center" style="height:100vh; color: var(--text-quiet); font-family: var(--font-mono); font-size: 12px;">
+      Loading persMEM…
+    </div>
+  </div>
+  <script src="/static/memory.js"></script>
+  <script src="/static/app.js"></script>
+  <script>
+    if (window.App && typeof window.App.init === 'function') {
+      window.App.init(document.getElementById('root'));
+    } else {
+      document.getElementById('root').textContent = 'persMEM app failed to load — see console';
+      console.error('window.App.init not available');
+    }
+  </script>
+</body>
+</html>

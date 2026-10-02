@@ -1,0 +1,505 @@
+/* ==========================================================================
+   Operations visual system — one file, two surfaces.
+   Plain CSS custom properties. No build step, no imports.
+   Served from two roots; safe to copy verbatim to either.
+
+   Theme:   data-theme="light" | "dark" on <html>; attribute wins over
+            prefers-color-scheme. Absent attribute = follow the OS.
+   Density: data-density="cozy" (default) | "compact" on <html>.
+
+   Fonts:   @font-face lives here, with root-relative /fonts/ sources that
+            resolve identically under both servers. Caddy serves /fonts/
+            from its root already; Flask is pinned to static_url_path
+            ="/static" and needs a route. One file, one set of faces — a
+            per-surface font stylesheet is the drift this system cures.
+
+   THE oklch() VALUES ARE AUTHORITATIVE. The hex in each comment is a
+   convenience for reading and for the ttyd unit, which cannot resolve a
+   custom property. As first delivered, 8 light comments and all 6 dark
+   ones disagreed with their own oklch — every dark one lighter than the
+   value renders. The oklch was kept and the comments recomputed, because
+   Design's published contrast figures (ANSI normal 7.8–8.7, bright
+   12.2–13.8, index 8 at 4.78, index 0 at 1.12) reproduce against the
+   oklch and not against the commented hex. Recompute, never re-eyeball,
+   if a value changes.
+
+   NOT in this file, deliberately:
+     - Agent colours. Identity is data; it lives in the roster file and is
+       injected at load (see AGENT IDENTITY below). Nothing here hard-codes
+       an agent name.
+   ========================================================================== */
+
+/* --- FONT FACES -----------------------------------------------------------
+   Archivo and JetBrains Mono, variable, latin + latin-ext. The dashboard
+   renders third-party feed content — CVE advisories and mailing-list posts
+   with European author names — so latin-ext is load-bearing, not a nicety.
+   Place the four woff2 files under /fonts/ on both roots at deploy.
+   -------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: Archivo;
+  src: url("/fonts/archivo-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: Archivo;
+  src: url("/fonts/archivo-latin-ext.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/jetbrains-mono-latin-ext.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  /* --- SURFACES ------------------------------------------------------- */
+  --s-raised:   oklch(99% 0.003 240);   /* #fafcfe  panes, cards, drawer   */
+  --s-canvas:   oklch(97% 0.004 240);   /* #f3f5f7  page ground            */
+  --s-inset:    oklch(96% 0.005 240);   /* #eff2f5  table heads, wells     */
+  --s-sunk:     oklch(94% 0.006 240);   /* #e8ecef  deepest recess         */
+
+  /* --- RULES ---------------------------------------------------------- */
+  --rule-hair:  oklch(88% 0.006 240);   /* #d4d8db  internal dividers      */
+  --rule-edge:  oklch(82% 0.008 240);   /* #c0c5c9  container edges        */
+
+  /* --- INK ------------------------------------------------------------ */
+  --ink-1:      oklch(18% 0.018 245);   /* #0b1219  headings, values       */
+  --ink-2:      oklch(32% 0.014 245);   /* #2d343a  body, cells, terminal  */
+  --ink-3:      oklch(50% 0.010 245);   /* #5f6469  labels, metadata       */
+  --ink-4:      oklch(62% 0.008 245);   /* #82878b  NON-TEXT ONLY          */
+  --ink-4-text: oklch(52% 0.010 245);   /* #646a6e  small quiet text       */
+
+  /* --- ACCENT ---------------------------------------------------------
+     Both accent steps sit outside the sRGB gamut and are clipped by the
+     browser; the hex is the clipped result and is what contrast was
+     measured on. Nudging the hue will not buy chroma here. */
+  --accent:       oklch(50% 0.16 248);  /* #0065b8  action, focus, links   */
+  --accent-press: oklch(44% 0.16 248);  /* #0053a5  pressed / active       */
+  --accent-ink:   oklch(99% 0.003 240); /* type on an accent fill          */
+
+  /* --- STATUS ---------------------------------------------------------
+     -fill is non-text: dots, bars, badges, 2px edges. Bar is 3.0:1.
+     -text is type: verified 4.5:1 against all four light surfaces
+     (worst case --s-sunk: ok 4.57, warn 4.55, err 4.68). */
+  --ok-fill:    oklch(62% 0.13 152);    /* #3d9c5e */
+  --ok-text:    oklch(51% 0.13 152);    /* #0d7a3e */
+  --warn-fill:  oklch(70% 0.14 75);     /* #d0901e */
+  --warn-text:  oklch(53% 0.14 75);     /* #995c00  clipped */
+  --err-fill:   oklch(55% 0.18 25);     /* #c53637 */
+  --err-text:   oklch(54% 0.18 25);     /* #c13234 */
+
+  /* --- ALIAS LAYER ----------------------------------------------------
+     Eleven role names. Call sites use these. Adding a 1:1 rename of a
+     primitive to this list is not allowed — if a name does not carry a
+     role, it does not belong here. */
+  --text-strong:    var(--ink-1);
+  --text-body:      var(--ink-2);
+  --text-quiet:     var(--ink-3);
+  --text-faint:     var(--ink-4-text);
+  --text-on-accent: var(--accent-ink);
+  --bg-page:        var(--s-canvas);
+  --bg-panel:       var(--s-raised);
+  --bg-inset:       var(--s-inset);
+  --bg-well:        var(--s-sunk);
+  --line:           var(--rule-hair);
+  --line-strong:    var(--rule-edge);
+
+  /* --- TYPE ----------------------------------------------------------- */
+  --font-sans: Archivo, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+
+  --text-xs: 12px;  --lh-xs: 1.35;  --wt-xs: 500;  /* uppercase labels     */
+  --text-sm: 13px;  --lh-sm: 1.45;  --wt-sm: 400;  /* cells, pane chrome   */
+  --text-md: 15px;  --lh-md: 1.50;  --wt-md: 400;  /* prose, feed body     */
+  --text-lg: 20px;  --lh-lg: 1.25;  --wt-lg: 600;  /* titles, tile figures */
+
+  --track-label: 0.09em;    /* --text-xs uppercase only */
+  --track-head: -0.018em;   /* --text-lg only           */
+
+  /* --- SPACING — 4 pt ------------------------------------------------- */
+  --sp-05: 2px;   /* optical nudges only, never layout */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-12: 48px;
+
+  /* --- GEOMETRY ------------------------------------------------------- */
+  --radius-1: 2px;  /* controls, chips, dots, inputs, badges */
+  --radius-2: 4px;  /* panes, cards, drawer, modal — the maximum */
+
+  --icon-size:   16px;   /* the sprite's viewBox; see portal/portal/icons/ */
+  --icon-stroke: 1.5px;
+
+  --rule-w:        1px;
+  --edge-w:        1px;
+  --edge-active-w: 2px;   /* focused pane, selected nav row */
+  --edge-status-w: 2px;   /* agent pane top edge */
+
+  --shadow: none;         /* elevation is surface step + edge, never blur */
+  --focus-ring: inset 0 0 0 2px var(--accent);  /* inset: no layout shift */
+
+  /* --- MOTION --------------------------------------------------------- */
+  --dur-state:  120ms;
+  --ease-state: cubic-bezier(0.2, 0, 0.2, 1);
+  --transition: 120ms cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* --- CATEGORICAL SERIES --------------------------------------------
+     Fallback only. Explicit roster colour always wins; the generator
+     fills in agents that have none. Hue is a pure function of index, so
+     adding or retiring an agent never recolours its neighbours.
+
+       h = (--series-h0 + k * --series-step) mod 360
+       if |h - 248| <= 20  ->  index is not consumed, k advances, retry
+       tier A (even i): L 58% C 0.145   tier B (odd i): L 72% C 0.115
+
+     The ±20 deg band around the accent hue stays visibly empty so blue
+     never means anything but interactive or selected. Note the seed IS
+     the accent hue, so k=0 is always skipped; the first hue issued is
+     25.5 deg. Harmless, and left as delivered. */
+  --series-h0:   248;
+  --series-step: 137.508;
+  --series-band: 20;
+  --series-l-a: 58%;  --series-c-a: 0.145;
+  --series-l-b: 72%;  --series-c-b: 0.115;
+  --series-ink-a: var(--s-raised);  /* label on a tier A fill */
+  --series-ink-b: var(--ink-1);     /* label on a tier B fill */
+
+  /* --- CATEGORICAL SERIES, RESOLVED -----------------------------------
+     The four hues the walk above actually issues, written out so a chart can
+     use them without running a generator. Derived, not chosen: seed 248 is the
+     accent hue so k=0 is skipped, and the accepted hues are 25.5, 163.0, 300.5
+     and 78.0 -- minimum separation 52.5 deg.
+
+     The A/B tier alternation is GONE. Tiers only separated ADJACENT indices, so
+     series-0 and series-2 -- both tier A -- came out the same grey (Y 0.177 vs
+     0.181), identical to anyone reading the chart without colour. Replaced by a
+     luminance ladder: each series sits at its own rung, so all six pairs separate.
+     Worst pair 1.58x light, 1.82x dark (Design's own figures were 1.49x/1.74x --
+     conservative, and the built values beat them).
+     Light 3.06-9.78:1 on --bg-panel; dark 2.99-15.67:1 on --s-raised. Dark
+     series-1 lands on the 3.0 floor exactly -- 2.99 by my arithmetic, 3.00 by
+     theirs, a rounding boundary. Left as delivered; a half-point of lightness
+     settles it if it ever matters. */
+  --series-0: oklch(56% 0.13 25.5);    /* #b4514c */
+  --series-1: oklch(35% 0.13 163);     /* #004d25 */
+  --series-2: oklch(67% 0.13 300.5);   /* #a281d9 */
+  --series-3: oklch(44% 0.13 78);      /* #784600 */
+  --series-4: oklch(58% 0.13 215.5);   /* #008caa */
+  --series-5: oklch(50% 0.13 353);     /* #993e6a */
+
+  /* A faint accent wash for a selected or highlighted row. Non-text only. */
+  --accent-ghost: oklch(97% 0.018 248);  /* #ecf7ff */
+
+  /* --- AGENT IDENTITY -------------------------------------------------
+     Per agent the loader sets --agent-h from the roster hue, then:
+       --id-edge  calm 2px pane edge, chroma held in reserve
+       --id-fill  dot / bar / legend swatch, 3.0:1 bar cleared
+     Identity is NEVER type. At the roster's authored lightness only one
+     of four hues clears 4.5:1 on the light ground (6.17 / 4.06 / 3.72 /
+     3.13) and the purple drops to 2.82 on the dark well, so an agent
+     name in its own colour fails today on three of four panes. Agent
+     names render --text-strong; the colour rides the edge and the dot. */
+  /* DECLARED AGAIN ON [data-agent] BELOW, and that is the copy that works.
+     A var() inside a custom property is substituted where the property is
+     DECLARED, not where it is used. These :root copies therefore resolve
+     --agent-h at :root, where it is unset, and every element inherits the same
+     already-substituted fallback hue -- which is exactly what shipped: four
+     panes, one colour. The :root pair stays only as the neutral default for a
+     surface that sets no agent at all. */
+  --id-edge: oklch(68% 0.055 var(--agent-h, 245));
+  --id-fill: oklch(56% 0.115 var(--agent-h, 245));
+
+  /* --- TERMINAL ------------------------------------------------------
+     BOTH sets are constants, and both ship. The ttyd theme is baked into the
+     systemd unit at render time, so the unit carries whichever set agents.json
+     `.theme.mode` names -- but the portal can swap the live palette at runtime
+     because ttyd 1.7.7 exposes its xterm.js instance as `window.term` on the
+     iframe, and the portal is same-origin with it. That is what makes a real
+     light/dark terminal toggle possible without restarting anything.
+
+     Light is the default: the operator asked for it (2026-09-11), reversing
+     an earlier design decision, which chose always-dark on the belief that a
+     constant was the only implementable option. window.term is the thing that
+     was not known then.
+
+     The bright set is HIGHER contrast than the normal set in both themes, not
+     lighter -- on a light ground "bright = lighter" is unreadable. Light normal
+     clears 5.19-6.24:1, light bright 8.17-10.53:1; dark normal 7.8-8.7:1, dark
+     bright 12.2-13.8:1.
+
+     MIRRORED into the roster's .theme, which the unit is generated from.
+     Keep every key of the two sets equal. */
+  --term-light-background: oklch(99% 0.003 240);  /* #fafcfe */
+  --term-light-foreground: oklch(32% 0.014 245);  /* #2d343a */
+  --term-light-cursor: oklch(50% 0.16 248);  /* #0065b8 */
+  --term-light-cursoraccent: oklch(99% 0.003 240);  /* #fafcfe */
+  --term-light-selection: oklch(93% 0.04 248);  /* #d4ebff */
+  --term-light-black: oklch(18% 0.018 245);  /* #0b1219 */
+  --term-light-red: oklch(50% 0.13 25);  /* #a03f3c */
+  --term-light-green: oklch(50% 0.13 152);  /* #05773b */
+  --term-light-yellow: oklch(50% 0.13 75);  /* #8d5500 */
+  --term-light-blue: oklch(50% 0.13 248);  /* #0b67a9 */
+  --term-light-magenta: oklch(50% 0.13 315);  /* #7f4995 */
+  --term-light-cyan: oklch(50% 0.13 205);  /* #007686 */
+  --term-light-white: oklch(94% 0.006 240);  /* #e8ecef */
+  --term-light-brightblack: oklch(52% 0.01 245);  /* #646a6e */
+  --term-light-brightred: oklch(38% 0.15 25);  /* #800613 */
+  --term-light-brightgreen: oklch(38% 0.15 152);  /* #00560f */
+  --term-light-brightyellow: oklch(38% 0.15 75);  /* #6e2e00 */
+  --term-light-brightblue: oklch(38% 0.15 248);  /* #00428c */
+  --term-light-brightmagenta: oklch(38% 0.15 315);  /* #5f1e77 */
+  --term-light-brightcyan: oklch(38% 0.15 205);  /* #005568 */
+  --term-light-brightwhite: oklch(99% 0.003 240);  /* #fafcfe */
+  --term-dark-background: oklch(11% 0.005 245);  /* #030506 */
+  --term-dark-foreground: oklch(88% 0.006 245);  /* #d4d8db */
+  --term-dark-cursor: oklch(70% 0.15 248);  /* #45a4f6 */
+  --term-dark-cursoraccent: oklch(11% 0.005 245);  /* #030506 */
+  --term-dark-selection: oklch(32% 0.06 248);  /* #173550 */
+  --term-dark-black: oklch(20% 0.007 245);  /* #131619 */
+  --term-dark-red: oklch(72% 0.13 25);  /* #eb827b */
+  --term-dark-green: oklch(72% 0.13 152);  /* #5ebc7b */
+  --term-dark-yellow: oklch(72% 0.13 75);  /* #d49838 */
+  --term-dark-blue: oklch(72% 0.13 248);  /* #5cabf2 */
+  --term-dark-magenta: oklch(72% 0.13 315);  /* #c38adc */
+  --term-dark-cyan: oklch(72% 0.13 205);  /* #00bbcb */
+  --term-dark-white: oklch(88% 0.006 245);  /* #d4d8db */
+  --term-dark-brightblack: oklch(58% 0.01 245);  /* #767b80 */
+  --term-dark-brightred: oklch(86% 0.105 25);  /* #ffb6ae */
+  --term-dark-brightgreen: oklch(86% 0.105 152);  /* #9ce5af */
+  --term-dark-brightyellow: oklch(86% 0.105 75);  /* #fac781 */
+  --term-dark-brightblue: oklch(86% 0.105 248);  /* #99d7ff */
+  --term-dark-brightmagenta: oklch(86% 0.105 315);  /* #ebbcff */
+  --term-dark-brightcyan: oklch(86% 0.105 205);  /* #73e5f2 */
+  --term-dark-brightwhite: oklch(97% 0.004 245);  /* #f3f5f8 */
+
+  /* The tmux status strip carries NO hex. It is written in ANSI indices and
+     `default`, so it follows whichever palette the terminal is currently on --
+     including a runtime toggle, with no regeneration and no redeploy. That is
+     why these are not tokens. See install/render-birds.sh. */
+}
+/* ^ closes :root. This brace went missing in 46dad61 when the terminal section was
+   rewritten to carry both palettes, and stayed missing for three commits and two
+   deploys. Everything below -- the dark blocks, the density variant, every
+   [data-pane-state] rule -- was being swallowed as further :root declarations and
+   never applied. Nothing errors: the browser drops what it cannot parse and the page
+   looks almost right, so dark chrome simply never worked while the terminal toggle,
+   which is JS, did. Check the file's structure after any edit, for this reason. */
+
+/* The working declaration: same element that carries --agent-h, so the hue is in
+   scope when the value is substituted. Both surfaces put data-agent on whatever
+   element they set --agent-h on. */
+[data-agent] {
+  /* Identity lives in the HEADER now, not the top border (operator, 2026-09-11):
+     a wash behind the name, the name in its own colour, and the dot. The border is
+     left to status, so a coloured border means trouble and nothing else.
+     Values are the operator's, tuned in the Agent Tone Tuner against the live
+     panes. His eye, his call -- these are not derived and are not mine to adjust.
+     Measured, for the record and not as a verdict: name 4.57-4.83:1 on the wash;
+     dot 1.34-1.50:1, which is well under the 3.0 a UI shape would need if the dot
+     were the only thing carrying state. It is not -- the border and, shortly, the
+     chip carry it too. */
+  --id-wash: oklch(75% 0.025 var(--agent-h, 245));
+  --id-text: oklch(37% 0.09 var(--agent-h, 245));
+  --id-edge: oklch(68% 0.055 var(--agent-h, 245));
+  /* 66% -> 57%: the operator's chroma kept, his wash and name untouched. At 66%
+     the dot measured 2.87 on --bg-panel for one seat's colour, under the 3.0 a fill needs,
+     and --bg-panel is where it actually renders -- the drawer row and the
+     dashboard's legend swatch. Now 4.08-4.73 across the roster.
+     Design proposed lifting the WASH to 91% instead, on the premise that the dot
+     is invisible on it (1.33-1.49). Since step 5 that is no longer where the dot
+     lives: on the wash the glyph takes --pane-dot, which is status-coloured.
+     Fixing the wash would have traded a hand-picked colour for a problem this
+     surface does not have. Operator chose the narrow fix. */
+  --id-fill: oklch(57% 0.18 var(--agent-h, 245));
+}
+
+/* Type badges. Same mechanism as [data-agent] and the same scoping rule: declared
+   here, not on :root, because --type-h arrives on the element. A badge is TEXT on a
+   tint and needs 4.5:1, which is why it cannot reuse the series ladder built for
+   3.0 fills. Measured 6.22-7.39 light, 9.10-9.78 dark. A type with no hue takes the
+   neutral fallback and reads as quiet rather than disabled. */
+[data-type] {
+  --type-wash: oklch(94% 0.045 var(--type-h, 245));
+  --type-ink:  oklch(42% 0.13  var(--type-h, 245));
+}
+
+/* ==========================================================================
+   DARK — same token names, redefined values.
+   Terminal and ANSI tokens are absent here on purpose: they are constants.
+   Every hex below was recomputed; as delivered all six were lighter than
+   their own oklch renders, so the ramp is darker than the comments implied.
+   Worth an eyeball: this bottoms out near black rather than at charcoal.
+   ========================================================================== */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+  :root:not([data-theme="light"]) {
+    --s-raised:   oklch(20% 0.007 245);  /* #131619 */
+    --s-canvas:   oklch(17% 0.006 245);  /* #0d1012 */
+    --s-inset:    oklch(14% 0.006 245);  /* #07090b */
+    --s-sunk:     oklch(11% 0.005 245);  /* #030506 */
+    --rule-hair:  oklch(28% 0.008 245);  /* #26292d */
+    --rule-edge:  oklch(36% 0.010 245);  /* #393e42 */
+    --ink-1:      oklch(97% 0.004 245);
+    --ink-2:      oklch(88% 0.006 245);
+    --ink-3:      oklch(72% 0.010 245);
+    --ink-4:      oklch(62% 0.012 245);
+    --ink-4-text: oklch(68% 0.012 245);
+    --accent:       oklch(70% 0.15 248);
+    --accent-press: oklch(78% 0.14 248);
+    --accent-ink:   oklch(17% 0.006 245);
+    --ok-text:    oklch(78% 0.14 152);
+    --warn-text:  oklch(84% 0.13 75);
+    --err-text:   oklch(70% 0.17 25);
+    --series-0: oklch(76% 0.115 25.5);
+    --series-1: oklch(48% 0.115 163);
+    --series-2: oklch(98% 0.115 300.5);
+    --series-3: oklch(58% 0.115 78);
+    --series-4: oklch(83% 0.115 215.5);
+    --series-5: oklch(67% 0.115 353);
+    --accent-ghost: oklch(28% 0.03 248);
+    --id-edge: oklch(50% 0.055 var(--agent-h, 245));
+    --id-fill: oklch(74% 0.11 var(--agent-h, 245));
+  }
+  :root:not([data-theme="light"]) [data-type],
+  [data-type]:not([data-theme="light"]) {
+    --type-wash: oklch(26% 0.04 var(--type-h, 245));
+    --type-ink:  oklch(84% 0.10 var(--type-h, 245));
+  }
+  :root:not([data-theme="light"]) [data-agent],
+  [data-agent]:not([data-theme="light"]) {
+    --id-wash: oklch(32% 0.045 var(--agent-h, 245));
+    --id-text: oklch(86% 0.09 var(--agent-h, 245));
+    --id-edge: oklch(50% 0.055 var(--agent-h, 245));
+    --id-fill: oklch(74% 0.11 var(--agent-h, 245));
+  }
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --s-raised:   oklch(20% 0.007 245);  /* #131619 */
+  --s-canvas:   oklch(17% 0.006 245);  /* #0d1012 */
+  --s-inset:    oklch(14% 0.006 245);  /* #07090b */
+  --s-sunk:     oklch(11% 0.005 245);  /* #030506 */
+  --rule-hair:  oklch(28% 0.008 245);  /* #26292d */
+  --rule-edge:  oklch(36% 0.010 245);  /* #393e42 */
+  --ink-1:      oklch(97% 0.004 245);
+  --ink-2:      oklch(88% 0.006 245);
+  --ink-3:      oklch(72% 0.010 245);
+  --ink-4:      oklch(62% 0.012 245);
+  --ink-4-text: oklch(68% 0.012 245);
+  --accent:       oklch(70% 0.15 248);
+  --accent-press: oklch(78% 0.14 248);
+  --accent-ink:   oklch(17% 0.006 245);
+  --ok-text:    oklch(78% 0.14 152);
+  --warn-text:  oklch(84% 0.13 75);
+  --err-text:   oklch(70% 0.17 25);
+  --series-0: oklch(76% 0.115 25.5);
+  --series-1: oklch(48% 0.115 163);
+  --series-2: oklch(98% 0.115 300.5);
+  --series-3: oklch(58% 0.115 78);
+  --series-4: oklch(83% 0.115 215.5);
+  --series-5: oklch(67% 0.115 353);
+  --accent-ghost: oklch(28% 0.03 248);
+  --id-edge: oklch(50% 0.055 var(--agent-h, 245));
+  --id-fill: oklch(74% 0.11 var(--agent-h, 245));
+}
+[data-theme="dark"] [data-type] {
+  --type-wash: oklch(26% 0.04 var(--type-h, 245));
+  --type-ink:  oklch(84% 0.10 var(--type-h, 245));
+}
+[data-theme="dark"] [data-agent] {
+  --id-wash: oklch(32% 0.045 var(--agent-h, 245));
+  --id-text: oklch(86% 0.09 var(--agent-h, 245));
+  --id-edge: oklch(50% 0.055 var(--agent-h, 245));
+  --id-fill: oklch(74% 0.11 var(--agent-h, 245));
+}
+
+/* --ok-fill, --warn-fill and --err-fill hold their light values in dark
+   mode so a status dot is the same colour wherever an operator sees it.
+   One consequence to respect: --err-fill lands 3.42:1 on dark --s-raised,
+   which is legal for a dot, a bar or a 2px edge and illegal for type.
+   Dark error copy takes --err-text. */
+
+/* ==========================================================================
+   DENSITY — data-density="compact" retunes spacing only.
+   Type scale, radii and rule weights do not change: a denser table is a
+   spacing change, not a smaller-type change.
+   ========================================================================== */
+
+[data-density="compact"] {
+  --sp-1:  4px;
+  --sp-2:  6px;
+  --sp-3:  8px;
+  --sp-4:  12px;
+  --sp-6:  16px;
+  --sp-8:  24px;
+  --sp-12: 32px;
+}
+
+/* ==========================================================================
+   PANE STATE — four agent states, not three.
+   A pane whose agent hit a usage limit currently looks exactly like an idle
+   one. Colour alone cannot fix that, because the missing information is
+   when the limit resets. Every non-live state carries a mono chip.
+
+     live      identity edge   --ok-fill dot, filled     no chip
+     waiting   identity edge   --ink-4 dot, hollow       no chip
+     blocked   --warn-fill edge (identity yields)        LIMIT
+     retrying  --warn-fill edge (identity yields)        RECONNECT · try 3
+     dead      --err-fill edge  (identity yields)        EXITED · code 137
+
+   The blocked chip carries the KIND and no time. Claude Code does print a
+   reset time with the session-limit message and the Stop hook reads it and
+   deliberately drops it: those times are not reliable (operator, 2026-09-11),
+   and a chip showing one makes a promise the system cannot keep -- a pane
+   still blocked past it would display a time in the past. LIMIT alone is the
+   complete state. There is no second span and no field to wait for.
+   ========================================================================== */
+
+/* The border carries STATUS ONLY. Identity moved to the header wash, so a healthy
+   pane has no coloured border at all -- which is the point: an alert edge is only
+   loud if it is the single coloured line on screen. Four permanently-tinted borders
+   competed with it. */
+[data-pane-state="live"]     { --pane-edge: var(--line-strong); --pane-dot: var(--ok-fill); }
+/* waiting was `transparent`, which made a hollow dot back when the indicator was a
+   filled <span> with a border. The indicator is a STROKED GLYPH now, and transparent
+   erases it -- so every idle agent's marker simply vanished, which is what shipped.
+   --id-text is the operator's own name tone: 4.57-4.83 on his wash, 8.94+ on an
+   inactive tab, and at rest a pane showing its own colour is right. The glyph SHAPE
+   (hollow ring vs filled disc) is what separates waiting from live, as designed.
+   Not --ink-4, which Design specified against THEIR 91% wash proposal; on the 75%
+   wash we kept it measures 1.62 and would have been the same bug, fainter. */
+[data-pane-state="waiting"]  { --pane-edge: var(--line-strong); --pane-dot: var(--id-text); }
+[data-pane-state="blocked"]  { --pane-edge: var(--warn-fill); --pane-dot: var(--warn-fill); }
+[data-pane-state="retrying"] { --pane-edge: var(--warn-fill); --pane-dot: var(--warn-fill); }
+[data-pane-state="dead"]     { --pane-edge: var(--err-fill);  --pane-dot: var(--err-fill);  }

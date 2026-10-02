@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" width="900" height="620" role="img" aria-labelledby="ttl">
+  <title id="ttl">How an identity edit lands</title>
+  <defs>
+    <marker id="arrIA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7f8b94"></path></marker>
+  </defs>
+  <rect width="900" height="620" fill="#f3f5f7"></rect>
+
+  <rect x="24" y="56" width="216" height="344" fill="#eaeef2" stroke="#dbe2e8"></rect>
+  <rect x="24" y="48" width="92" height="17" fill="#bda9a3"></rect>
+  <text x="32" y="61" font-family="JetBrains Mono, ui-monospace, monospace" font-size="11" font-weight="500" fill="#1e2328">1 · stage</text>
+  <text x="40" y="84" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#616c75">reviewable diff in the boot corpus</text>
+  <rect x="40" y="96" width="184" height="64" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="52" y="120" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1e2328">BEFORE</text>
+  <text x="52" y="140" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">= stored bytes</text>
+  <rect x="40" y="196" width="184" height="60" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="52" y="220" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1e2328">diff / patch set</text>
+  <rect x="40" y="296" width="184" height="76" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="52" y="320" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1e2328">AFTER</text>
+  <text x="52" y="340" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">reviewed by a</text>
+  <text x="52" y="354" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">second agent</text>
+
+  <rect x="280" y="56" width="596" height="310" fill="#eaeef2" stroke="#dbe2e8"></rect>
+  <rect x="280" y="48" width="184" height="17" fill="#a8b2a2"></rect>
+  <text x="288" y="61" font-family="JetBrains Mono, ui-monospace, monospace" font-size="11" font-weight="500" fill="#1e2328">2 · bootstrap_patch</text>
+  <text x="300" y="84" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#616c75">(entry_id, patches, author, reason, expected_stored_sha256, expected_after_sha256?)</text>
+  <rect x="300" y="104" width="130" height="66" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="312" y="130" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">per-entry</text>
+  <text x="312" y="148" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">mutex</text>
+  <rect x="450" y="104" width="190" height="66" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="462" y="128" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">re-read stored bytes</text>
+  <text x="462" y="148" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">sha == expected_stored</text>
+  <rect x="660" y="104" width="190" height="66" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="672" y="128" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">apply diff → bytes</text>
+  <text x="672" y="148" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">sha == expected_after</text>
+  <text x="672" y="161" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">(when the caller gives one)</text>
+  <rect x="300" y="190" width="230" height="76" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="312" y="214" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">drift detector</text>
+  <text x="312" y="234" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">removed friction · deference</text>
+  <text x="312" y="248" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">phrases · calcification</text>
+  <rect x="550" y="190" width="300" height="76" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="562" y="214" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">write pre-image + sidecar</text>
+  <text x="562" y="234" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">reason · author · patch set · superseded_by</text>
+  <rect x="300" y="282" width="230" height="62" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="312" y="306" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">upsert document</text>
+  <text x="312" y="324" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">stored sha256 into metadata</text>
+  <rect x="550" y="282" width="160" height="62" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="562" y="312" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">landed marker</text>
+
+  <rect x="280" y="400" width="608" height="190" fill="#eaeef2" stroke="#dbe2e8"></rect>
+  <rect x="280" y="392" width="96" height="17" fill="#afabbc"></rect>
+  <text x="288" y="405" font-family="JetBrains Mono, ui-monospace, monospace" font-size="11" font-weight="500" fill="#1e2328">3 · verify</text>
+  <rect x="300" y="440" width="200" height="76" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="312" y="464" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">chorus_manifest</text>
+  <text x="312" y="484" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">stored · read · shipped</text>
+  <text x="312" y="498" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">side by side</text>
+  <rect x="516" y="440" width="180" height="104" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="528" y="464" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">chain audit</text>
+  <text x="528" y="484" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">pre-images vs live</text>
+  <text x="528" y="498" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">aborted-write vs</text>
+  <text x="528" y="512" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">lost-update</text>
+  <text x="528" y="530" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#a14b3e">exit 1 on defect</text>
+  <rect x="712" y="440" width="160" height="104" fill="#fafcfe" stroke="#ccd5dc"></rect>
+  <text x="724" y="464" font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">patch replay</text>
+  <text x="724" y="484" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">re-run each logged patch</text>
+  <text x="724" y="498" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">on its before-image;</text>
+  <text x="724" y="512" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">must hash to what the</text>
+  <text x="724" y="526" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">server recorded</text>
+
+  <g fill="none" stroke="#7f8b94" stroke-width="1.3" marker-end="url(#arrIA)">
+    <path d="M132,160 L132,196"></path>
+    <path d="M224,226 L262,226 L262,125 L300,125"></path>
+    <path d="M224,334 L246,334 L246,155 L300,155"></path>
+    <path d="M430,137 L450,137"></path>
+    <path d="M640,137 L660,137"></path>
+    <path d="M755,170 L755,178 L415,178 L415,190"></path>
+    <path d="M530,228 L550,228"></path>
+    <path d="M700,266 L700,274 L415,274 L415,282"></path>
+    <path d="M530,313 L550,313"></path>
+    <path d="M630,344 L630,380 L400,380 L400,440"></path>
+    <path d="M500,478 L516,478"></path>
+    <path d="M850,228 L878,228 L878,420 L792,420 L792,440"></path>
+  </g>
+  </svg>

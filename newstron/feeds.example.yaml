@@ -1,0 +1,87 @@
+# feeds.example.yaml: an example feed list. Copy it to /etc/newstron/feeds.yaml
+# (root:newstron 0640, docs/LAYOUT.md) and make it yours.
+#
+# Each feed: name, url, tier, keywords, and an optional user_agent that replaces
+# the fetcher's own for that feed.
+# keywords: if the list is non-empty, at least one keyword must appear in the
+# title or summary for an item to be stored. An empty list stores every item.
+#
+# Tiers. The digest has a section for each of 1-4. purger.py sets how long each
+# tier is kept:
+#   1 security & operational    12 days
+#   2 infrastructure            12 days
+#   3 your tools' upstreams     12 days
+#   4 research                  30 days
+#   5-9 free for your own reading: 30 / 14 / 60 / 60 / 90 days. They get no
+#       digest section, but when a memory-server head is set
+#       (NEWSTRON_DIGEST_HEAD), its "yes" pulls items from tiers 2-9 into the
+#       security section.
+#
+# Before adding a feed, check that the URL answers (`curl -sI URL | head`) and
+# that feedparser parses it.
+
+feeds:
+  # -- Tier 1: security advisories --
+
+  - name: oss-security
+    url: https://seclists.org/rss/oss-sec.rss
+    tier: 1
+    keywords: [
+      # the stack's own dependencies
+      python, pip, pypi, pytorch, sentence-transformers, chromadb, uvicorn, starlette,
+      pydantic, caddy, ttyd, tmux, openssh, linux,
+      # supply-chain patterns
+      supply-chain, backdoor, trojan, malicious-dependency, package-compromise,
+      credential-harvester, token-stealer,
+    ]
+
+  - name: cisa-alerts
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    tier: 1
+    keywords: [python, linux, supply-chain, remote-code, critical]
+
+  # -- Tier 2: infrastructure --
+
+  - name: chromadb-releases
+    url: https://github.com/chroma-core/chroma/releases.atom
+    tier: 2
+    keywords: []
+
+  - name: kernel-stable
+    url: https://www.kernel.org/feeds/kdist.xml
+    tier: 2
+    keywords: [stable, longterm]
+
+  - name: python-insider
+    url: https://blog.python.org/feeds/posts/default
+    tier: 2
+    keywords: [security, release, CVE, vulnerability, patch]
+
+  # -- Tier 3: your tools' upstreams --
+
+  - name: claude-code-releases
+    url: https://github.com/anthropics/claude-code/releases.atom
+    tier: 3
+    keywords: []
+
+  - name: mcp-spec-releases
+    url: https://github.com/modelcontextprotocol/modelcontextprotocol/releases.atom
+    tier: 3
+    keywords: []
+
+  - name: mcp-python-sdk-releases
+    url: https://github.com/modelcontextprotocol/python-sdk/releases.atom
+    tier: 3
+    keywords: []
+
+  # -- Tier 4: research --
+
+  - name: arxiv-cs-ma
+    url: https://export.arxiv.org/rss/cs.MA
+    tier: 4
+    keywords: []  # multi-agent systems: a slow feed, take everything
+
+  - name: arxiv-cs-ai
+    url: https://export.arxiv.org/rss/cs.AI
+    tier: 4
+    keywords: [agent, memory, coordination, multi-agent, mcp, llm]

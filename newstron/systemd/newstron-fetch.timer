@@ -1,0 +1,10 @@
+[Unit]
+Description=newstron: fetch the feeds into the memory server's news collection (timer)
+
+[Timer]
+OnCalendar=*-*-* 11:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

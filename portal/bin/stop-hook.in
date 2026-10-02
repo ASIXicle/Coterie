@@ -1,0 +1,64 @@
+#!/bin/bash
+# stop-hook.in -- the Stop hook body, rendered by install/render-agents.sh and installed
+# root-owned to /usr/local/bin/@STOP_HOOK_NAME@. @PORT@ is baked in; the agent is the single argument, so ONE script serves every pane and each
+# settings.json differs from the next only by that word.
+#
+# Lives here rather than inline in settings.json for two reasons: the inline version
+# had grown past what anyone could read, and every edit to it rewrote settings.json,
+# which is hash-baselined by Hook & Shield -- so improving the hook meant re-baselining
+# every agent. With the logic behind a stable command line, settings.json stops moving.
+#
+# Reads Claude Code's hook JSON on stdin and POSTs to the chorus daemon:
+#   bird   who ended a turn (the daemon's JSON key; the value is the agent name)
+#   cid    the chorus round this turn belonged to, if any
+#   limit  "session" | "credits", ONLY when the turn ended blocked
+#
+# The KIND of limit, never a time. Claude Code prints a reset time with the session
+# message ("resets 10:20pm") and this hook deliberately drops it: those times are not
+# reliable (the operator, 2026-09-11 -- "session limits are sometimes hit, sometimes not,
+# those times are unreliable"). Surfacing one turns an unreliable figure into a promise
+# the UI appears to make, and a pane still blocked past it shows a time in the past.
+# The transcript keeps the original if anyone ever needs forensics; we do not copy it
+# into our own state and we do not display it.
+#
+# Detection is on `isApiErrorMessage`, a field in Claude Code's own transcript schema,
+# not on the English of the message -- wording changes, the field does not. The two
+# message shapes below were read from 28 real occurrences in this box's transcripts
+# (subagent fan-outs killed by 429, 2026-09-11), not invented:
+#
+#   You've hit your session limit · resets 10:20pm (America/Chicago)
+#   You're out of usage credits. Run /usage-credits to keep using <model> or /model to switch models.
+#
+# A limit is only CURRENT if no ordinary assistant turn has landed after it -- the
+# transcript keeps every past limit forever, and an hour-old one must not mark a
+# working pane blocked.
+set -u
+BIRD=${1:?usage: @STOP_HOOK_NAME@ <agent>}
+ENDPOINT=http://127.0.0.1:@PORT@/hook
+
+json=$(cat)
+t=$(printf %s "$json" | jq -r '.transcript_path // empty' 2>/dev/null)
+
+cid=""; limit=""
+if [ -n "$t" ] && [ -r "$t" ]; then
+    cid=$(grep -ao '\(CHORUS\|AMQ-CHECK\) #[0-9a-f]\{4\}' "$t" 2>/dev/null | tail -1 | grep -o '[0-9a-f]\{4\}$')
+
+    err_line=$(grep -n '"isApiErrorMessage":true' "$t" 2>/dev/null | tail -1 | cut -d: -f1)
+    if [ -n "$err_line" ]; then
+        # the last ordinary assistant turn: an assistant entry that is NOT an API error
+        ok_line=$(grep -n '"type":"assistant"' "$t" 2>/dev/null \
+                  | grep -v '"isApiErrorMessage":true' | tail -1 | cut -d: -f1)
+        if [ -z "$ok_line" ] || [ "$err_line" -gt "$ok_line" ]; then
+            msg=$(sed -n "${err_line}p" "$t" | jq -r '(.message.content[0].text // .message.content // "")' 2>/dev/null)
+            case "$msg" in
+                *"usage credits"*) limit=credits ;;
+                *limit*)           limit=session ;;
+            esac
+        fi
+    fi
+fi
+
+payload=$(jq -nc --arg b "$BIRD" --arg c "$cid" --arg l "$limit" \
+    '{bird:$b, cid:$c} + (if $l == "" then {} else {limit:$l} end)')
+curl -sm 3 -X POST -H 'Content-Type: application/json' -d "$payload" "$ENDPOINT" >/dev/null 2>&1 || true
+exit 0

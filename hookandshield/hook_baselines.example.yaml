@@ -1,0 +1,115 @@
+# hook_baselines.example.yaml — the row format for hook-detect's approved-hash registry.
+#
+# Content-rule matching against arbitrary shell is unbounded and adversarial:
+# every rule added is a new bypass to enumerate. Baseline-vs-current-hash is
+# bounded and decidable. So the registry (hook_baselines.yaml, or the file
+# SHIELD_BASELINES_FILE points at) is the primary gate for hook-detect on
+# Claude settings.json:
+#
+#   Hash matches an entry here      → silent, no alert.
+#   Hash differs from its entry     → ALERT with the diff (regardless of content).
+#   File exists but no entry here   → ALERT (new hook file appeared).
+#
+# The content analyzer (hook_analyzer.py) runs on any alert to annotate
+# severity — high if it also trips escalation rules, medium if the changed
+# content is analyzer-clean. It does NOT gate the alert.
+#
+# ── CANONICAL HASH (canon: v1) ────────────────────────────────────────────
+#
+# The `canon` field per entry selects hashing mode:
+#   absent      → raw file hash (byte-for-byte)
+#   canon: v1   → strip volatile-preference keys with TYPE GUARDS, then
+#                 sha256 a deterministic canonical serialization
+#
+# Rationale: some Claude Code keys move under normal use without changing
+# the power granted (a /model flip or a /tui preference change rewrites
+# settings.json). Under raw hashing every flip triggers a baseline mismatch
+# → analyser runs → analyser can raise HIGH on a benign hook (specifically:
+# a doorbell Stop hook that interpolates its payload into a loopback POST
+# that cannot leave the allowlisted port is correctly-benign-but-analyser-
+# ESCALATE). Canonical hashing v1 stops the mismatch on benign preference
+# flips so the analyser is only reached on real hook changes.
+#
+# Polarity: STRIP-list (blacklist), not allowlist — fail-CLOSED on unknown
+# keys. Any future Claude Code key that grants power alerts until a human
+# baselines it. Cost: one re-approval per new benign preference key. Right
+# cost for a security gate.
+#
+# Strip-list v1 with type guards (strip only if value has expected shape;
+# otherwise the key is HASHED so exfil via a preference key alerts loudly):
+#     model         — strip iff string   (/model flips)
+#     theme         — strip iff string   (light/dark preference)
+#     tui           — strip iff string   (Claude Code renderer preference)
+#     modelSettings — strip iff dict of {model_name: {effortLevel: str}} only
+#
+# Kept (hashed) — explicitly: hooks, permissions,
+# the permission-prompt keys, enableAllProjectMcpServers, plus every
+# top-level key not on the strip-list.
+#
+# Canonical form: json.loads → delete stripped keys → json.dumps(sort_keys=
+# True, separators=(",",":"), ensure_ascii=False).encode("utf-8") → sha256.
+# No indent (indentation is not content). Malformed JSON → fall back to raw
+# file hash with note "canon:unparseable". Do not "repair" and hash.
+#
+# Versioned per-entry: mixed states are fine (some rows on raw, some on v1)
+# and each agent migrates their OWN row (row owners correct their own rows;
+# the coordinator does not read other accounts' 700-mode homes). A future v2
+# strip-list change is a per-row migration again, never a flag day.
+#
+# Denominator rule (see hook_baselines.py + hook-detect.py): every finding
+# line and the run summary carry canon mode + stripped + kept, so "CLEAN"
+# reads against "evaluated" instead of silent-zero.
+#
+# ── HOW TO USE ────────────────────────────────────────────────────────────
+#
+# When you INTENTIONALLY change your ~/.claude/settings.json:
+#   1) Edit the file on disk.
+#   2) Compute your sha:
+#        raw (v0):  sha256sum ~/.claude/settings.json
+#        v1:        python3 hook_baselines.py --canon ~/.claude/settings.json
+#      Choose v1 for your row if you want your hash immune to /model + theme
+#      + tui flips (recommended: canonical hashing + the analyser + rendered
+#      hooks together close the preference-flip false-positive trap).
+#   3) Send the sha to the coordinator, who updates your entry (sha256,
+#      approved_at, note; add canon: v1 if migrating). Rows are owner-set,
+#      never inferred.
+#   4) Commit the registry and push.
+#   5) Next scan will silent-match your new hash.
+#
+# When a NEW agent joins: add an entry with the file's current hash + a note
+# describing what its hooks do. Use canon: v1 by default — migration is
+# per-row and you pay no cost for choosing it first.
+#
+# No entry ⇒ alerts on first scan. That is intentional: nothing gets
+# scanned silently unless a human said it's OK.
+
+# ── EXAMPLE ROWS ──────────────────────────────────────────────────────────
+#
+# This is hook_baselines.example.yaml: the row format, not a registry. Copy
+# it to hook_baselines.yaml (or point SHIELD_BASELINES_FILE at your copy),
+# replace every <placeholder>, and compute real hashes — the 0000… values
+# below match nothing, so a scan against this file alerts on every agent
+# file it finds, which is the intended fail-closed shape of an empty gate.
+
+baselines:
+
+  - filepath: /home/<agent>/.claude/settings.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"  # quoted: an unquoted all-digit scalar is YAML integer 0, which the loader drops
+    canon: v1
+    approved_by: <coordinator>  # `python3 hook_baselines.py --canon ~/.claude/settings.json` on <date>
+    approved_at: 1970-01-01
+    note: |
+      Example canon: v1 row. Hash is of the canonical form (model, theme,
+      tui, modelSettings stripped with type guards), so preference flips do
+      not move it and any hook or permission change does. Describe here what
+      the agent's hooks do (e.g. "Stop hook POSTs a static JSON literal to
+      the on-box doorbell listener on loopback").
+
+  - filepath: /home/<another-agent>/.claude/settings.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"  # quoted: an unquoted all-digit scalar is YAML integer 0, which the loader drops
+    approved_by: <coordinator>  # `sha256sum ~/.claude/settings.json` on <date>
+    approved_at: 1970-01-01
+    note: |
+      Example raw row (no `canon` field): byte-for-byte hash of the file as
+      written. Any edit, including a /model flip, is a baseline mismatch and
+      needs a re-approval. Prefer canon: v1 for new rows.

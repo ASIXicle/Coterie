@@ -1,0 +1,25 @@
+# forge.service — the private git server for the init prompts (docs/LAYOUT.md, tools/boot-forge.sh).
+# Loopback only; the LAN reaches it through the front door's Caddy. Runs as its own account, which
+# owns the repositories and their hooks: an agent reaches it only over HTTP with its own token.
+[Unit]
+Description=Forge: private git server for the init prompts (Forgejo)
+After=network.target
+
+[Service]
+Type=simple
+User=forge
+Group=forge
+WorkingDirectory=/var/lib/forge
+ExecStart=/opt/forge/forgejo --config /etc/forge/app.ini --work-path /var/lib/forge web
+Environment=USER=forge HOME=/var/lib/forge
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/forge
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+# newstron venv (/opt/newstron/venv): the fetcher's feed parsing + the weekly pip-audit scanner.
+# Pinned to the tested versions (2026-09-26). digest.py, purger.py and memory_client.py are stdlib only.
+feedparser==6.0.12
+PyYAML==6.0.3
+requests==2.33.1
+pip-audit==2.10.0

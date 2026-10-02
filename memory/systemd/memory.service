@@ -1,0 +1,27 @@
+# memory.service — the memory server (MCP over HTTP), per docs/LAYOUT.md.
+# Secrets and every MEMORY_* value come from /etc/memory.env (root-owned, 0600), never an
+# Environment= line (systemctl show serves those to every local account).
+[Unit]
+Description=memory server (MCP over HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=memory
+Group=memory
+EnvironmentFile=/etc/memory.env
+WorkingDirectory=/var/lib/memory
+# The embedding model loads custom code; refuse to start if that file is not the pinned one.
+ExecStartPre=/usr/bin/sha256sum -c ${MEMORY_EMBEDDING_MODEL}/.modeling.sha256
+ExecStart=/opt/memory/venv/bin/python3 /opt/memory/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/memory /var/lib/memory-amq
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

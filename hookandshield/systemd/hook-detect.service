@@ -1,0 +1,22 @@
+# hook-detect.service — weekly scan of every agent's settings against the approved-hash registry
+# (docs/LAYOUT.md Units table). Runs as root: it reads every home's settings. Its environment
+# comes ONLY from the root-owned /etc/shield/hook-detect.env (MEMORY_URL + NEWSTRON_SECRET for
+# alerts); a file another account owns must never steer a root process.
+[Unit]
+Description=Weekly AI persistence hook IOC scan
+After=network-online.target memory.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/shield/hook-detect.env
+ExecStart=/usr/bin/python3 /opt/shield/hook-detect.py
+# A scan that never ends would hold the unit active, and the timer never starts an active unit,
+# so every later week would be silent. A scan of a few homes takes seconds.
+TimeoutStartSec=15min
+LogsDirectory=hook-detect
+LogsDirectoryMode=0750
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true

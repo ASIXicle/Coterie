@@ -1,0 +1,17 @@
+# newstron-digest.service — daily digest to the news mailbox (docs/LAYOUT.md Units table).
+[Unit]
+Description=newstron: daily digest to the news mailbox
+After=network-online.target memory.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=newstron
+Group=newstron
+EnvironmentFile=/etc/newstron/newstron.env
+ExecStart=/opt/newstron/venv/bin/python3 /opt/newstron/digest.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/newstron /var/log/newstron

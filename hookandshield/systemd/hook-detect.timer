@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly AI persistence hook IOC scan timer
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

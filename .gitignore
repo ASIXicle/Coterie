@@ -1,0 +1,8 @@
+# Files setup.sh and install.sh write on this machine. They are yours, not part of the release,
+# and tools/verify-mirror.sh would otherwise report them as changes nobody committed.
+/config/agents.json
+/config/agents.json.before-setup
+/config/setup.env
+/portal/install/site.env
+/portal/install/site.env.before-setup
+/portal/build/

@@ -1,0 +1,18 @@
+# dashboard.service — docs/LAYOUT.md §Units. Runs as its own account from the memory venv, after
+# the memory server; every variable comes from /etc/dashboard.env (data paths only, no secret).
+[Unit]
+Description=Coterie dashboard (reads the memory server's state; writes go through the server)
+After=network.target memory.service
+Wants=memory.service
+
+[Service]
+Type=simple
+User=dashboard
+EnvironmentFile=/etc/dashboard.env
+WorkingDirectory=/opt/dashboard
+ExecStart=/opt/memory/venv/bin/python3 /opt/dashboard/dashboard.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

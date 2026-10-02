@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='-119 -789 829 829'><style>@media (prefers-color-scheme:dark){g{fill:%23f3f5f8;stroke:%23f3f5f8}}</style><g transform='scale(1 -1)' fill='%230b1219' stroke='%230b1219' stroke-width='48' stroke-linejoin='round'><path d='M357.70703125 763C79.70703125 763 28.70703125 545 28.70703125 328C28.70703125 159 120.70703125 -14 313.70703125 -14C481.70703125 -14 561.70703125 59 561.70703125 59V186H515.70703125C515.70703125 186 539.70703125 38 329.70703125 38C204.70703125 38 133.70703125 187 133.70703125 311C133.70703125 479 140.70703125 714 351.70703125 714C469.70703125 714 504.70703125 672 504.70703125 597H538.70703125V721C538.70703125 721 478.70703125 763 357.70703125 763Z'/></g></svg>">
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  /* The palette, type, spacing and geometry live in tokens.css, shared with the
+     dashboard so the two surfaces read as one product. Nothing is redeclared here.
+     Per-agent identity arrives as --agent-h, set on each pane from the roster at
+     load; tokens.css derives --id-edge and --id-fill from the hue alone, retuned
+     per theme. */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg-page);
+    color: var(--text-body);
+    font-family: var(--font-sans);
+    display: flex; flex-direction: column;
+    padding: 10px; gap: 10px;
+  }
+  header.bar {
+    /* centre, not baseline: the wordmark is a flex row now and a flex container's
+       baseline is its first item's, which dropped the banner below the title. */
+    display: flex; align-items: center; gap: 12px;
+    padding: 2px 6px; flex: none;
+  }
+  header.bar h1 {
+    margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .04em;
+    /* .icon is display:block; without a flex row here the mark stacks above the words */
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  header.bar h1 .icon { color: var(--text-strong); }   /* the mark is ink, not accent */
+  header.bar h1 .accent { color: var(--accent); }
+  header.bar .sub { color: var(--text-quiet); font-size: 12px; }
+  header.bar .right { margin-left: auto; color: var(--text-quiet); font-size: 12px; }
+  /* doorbell: centred in the bar (operator's ask 2026-09-10), ON by default */
+  header.bar { position: relative; }
+  #doorbell {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    font: 600 12.5px/16px var(--font-sans); color: var(--text-strong);
+    border: var(--edge-w) solid var(--line-strong); border-radius: var(--radius-1);
+    padding: 0 10px; height: 28px; background: var(--bg-panel); margin-left: auto;
+  }
+  #doorbell:hover { border-color: var(--accent); }
+  #doorbell:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  /* state reads from the dot, not from the label going grey: a control that dims
+     to say "off" is indistinguishable from one that is disabled. */
+  #doorbell .bell-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--ok-fill); border: 1.5px solid transparent;
+  }
+  #doorbell[aria-pressed="false"] .bell-dot { background: transparent; border-color: var(--ink-4); }
+  #doorbell[aria-pressed="false"] { color: var(--text-quiet); }
+  #doorbell .st { font-weight: 400; color: var(--text-quiet); font-size: 11.5px; font-family: var(--font-mono); }
+  #doorbell .st.withheld { color: var(--warn-text); }
+
+  /* --- stacked breakpoint: one pane at a time, tabs to switch ------------- */
+  .tabbar { display: none; gap: 6px; flex: none; padding: 0 6px; overflow-x: auto; }
+  .tabbar button {
+    display: flex; align-items: center; gap: 7px; height: 44px; padding: 0 12px;
+    background: var(--bg-inset); border: var(--edge-w) solid var(--line);
+    border-bottom: var(--edge-active-w) solid transparent;
+    border-radius: var(--radius-1) var(--radius-1) 0 0;
+    font: 600 13px/1 var(--font-sans); color: var(--text-quiet); cursor: pointer; white-space: nowrap;
+  }
+  /* the active tab wears the pane header it opens; the underline is --accent,
+     because selection is interaction and not identity. */
+  .tabbar button[aria-selected="true"] {
+    background: var(--id-wash); color: var(--id-text); border-bottom-color: var(--accent);
+  }
+  .tabbar button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .tabbar .state { color: var(--pane-dot, var(--id-fill)); }
+
+  @media (max-width: 899px) {
+    body { padding: 6px; }
+    .tabbar { display: flex; }
+    .grid { grid-template-columns: 1fr !important; grid-template-areas: none !important; grid-template-rows: 1fr; }
+    .pane { grid-area: auto !important; }
+    .pane:not([aria-current="true"]) { display: none; }
+    header.bar { flex-wrap: wrap; }
+    header.bar .sub { display: none; }
+  }
+
+  .grid {
+    flex: 1; min-height: 0;
+    display: grid; gap: 10px;
+    grid-template-rows: 1fr 1fr;
+    /* grid-template-columns and -areas are generated from agents.json */
+  }
+  /* Scoped to :not([data-pane-state]) on purpose. These are the same specificity
+     as tokens.css's [data-pane-state] rules and this stylesheet loads AFTER it, so
+     an unscoped .pane would win and no state would ever paint. */
+  .pane:not([data-pane-state]) {
+    --pane-edge: var(--line-strong);
+    --pane-dot: var(--id-fill);
+  }
+  .pane {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--bg-panel);
+    border: 1px solid var(--line-strong);
+    border-top: var(--edge-status-w) solid var(--pane-edge);
+    border-radius: var(--radius-2);
+    overflow: hidden;
+    transition: border-color var(--transition);
+  }
+  .pane:focus-within { box-shadow: var(--focus-ring); }
+
+  .pane .chip {
+    font: 500 11px/1 var(--font-mono); letter-spacing: .04em;
+    color: var(--warn-text); background: var(--bg-inset);
+    padding: 3px 6px; border-radius: var(--radius-1);
+  }
+  .pane[data-pane-state="dead"] .chip { color: var(--err-text); }
+  .pane .head {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    height: 34px; padding: 0 12px;
+    /* the agent tint: identity lives here now, not on the pane border */
+    background: var(--id-wash, var(--bg-inset));
+    border-bottom: 1px solid var(--line-strong);
+    cursor: pointer; user-select: none;
+  }
+  /* the state GLYPH replaces the coloured dot: live and waiting share an
+     uncoloured border, so shape is what separates them, not hue alone. */
+  .pane .head .state { color: var(--pane-dot); }
+  .pane .name {
+    font-size: 12.5px; font-weight: 700; letter-spacing: .09em;
+    /* The name stops shouting and starts carrying colour, which the wash makes
+       legible. Uppercase at .09em tracking was the last of the name-tag look. */
+    text-transform: none; letter-spacing: normal; font-weight: 600;
+    color: var(--id-text, var(--text-strong));
+  }
+  .pane .hint { color: var(--text-quiet); font-size: 11px; margin-left: 2px; }
+  .pane .tools { margin-left: auto; display: flex; gap: 4px; }
+  .pane .tools button {
+    background: none; border: 0; color: var(--text-quiet);
+    font-size: 13px; cursor: pointer; padding: 3px 6px; border-radius: var(--radius-1);
+    line-height: 1;
+  }
+  .pane .tools button:hover { color: var(--text-body); background: var(--bg-inset); }
+  .pane iframe {
+    flex: 1; width: 100%; border: 0; background: var(--bg-panel); min-height: 0;
+  }
+
+  /* --- icons (sizing from tokens.css) --- */
+  .icon { width: var(--icon-size); height: var(--icon-size); flex: none; display: block; }
+  .icon-btn {
+    width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    padding: 0; background: var(--bg-panel); border: var(--edge-w) solid var(--line);
+    border-radius: var(--radius-1); color: var(--text-quiet); cursor: pointer;
+    transition: var(--transition);
+  }
+  .icon-btn:hover { background: var(--bg-inset); border-color: var(--line-strong); color: var(--text-strong); }
+  .icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  @media (max-width: 899px) { .icon-btn { width: 44px; height: 44px; } }
+
+  /* help popover: absorbs the instruction string that used to live in the chrome */
+  /* [hidden] is only display:none at UA-stylesheet strength, so ANY display here
+     beats it and the popover renders permanently open -- which is what shipped.
+     The attribute stays the source of truth; this restores what it means. */
+  #help-pop[hidden] { display: none; }
+  #help-pop {
+    position: absolute; right: 10px; top: 40px; z-index: 20;
+    background: var(--bg-panel); border: var(--edge-w) solid var(--line-strong);
+    border-radius: var(--radius-2); padding: var(--sp-3); min-width: 250px;
+    display: grid; grid-template-columns: auto 1fr; gap: var(--sp-1) var(--sp-3);
+    font-size: var(--text-xs);
+  }
+  #help-pop kbd { font-family: var(--font-mono); color: var(--text-strong); font-size: var(--text-xs); }
+  #help-pop span { color: var(--text-quiet); }
+
+  /* theme: two segments in one hairline container, not a button that reads as a label */
+  #theme-seg {
+    display: inline-flex; height: 28px; border: var(--edge-w) solid var(--line);
+    border-radius: var(--radius-1); overflow: hidden;
+  }
+  #theme-seg button {
+    width: 30px; display: inline-flex; align-items: center; justify-content: center;
+    background: var(--bg-inset); color: var(--text-quiet); border: 0; cursor: pointer;
+  }
+  #theme-seg button[aria-checked="true"] { background: var(--bg-panel); color: var(--text-strong); }
+  #theme-seg button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+  #chorus-toggle {
+    background: none; border: 1px solid var(--line-strong); border-radius: var(--radius-1);
+    color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 600;
+    padding: 3px 10px; cursor: pointer; margin-left: 10px;
+    /* same reason as the wordmark: glyph and label are a row, not a stack.
+       Height matched to the doorbell and the theme segments so the three sit level. */
+    display: inline-flex; align-items: center; gap: 6px; height: 28px;
+  }
+  #chorus-toggle:hover { background: var(--bg-inset); }
+  #chorus {
+    display: none; flex: none; flex-direction: column; gap: 8px;
+    background: var(--bg-panel); border: 1px solid var(--line-strong);
+    border-top: 3px solid var(--accent); border-radius: var(--radius-2);
+    padding: 10px 12px;
+  }
+  #chorus.open { display: flex; }
+  #chorus textarea {
+    resize: vertical; min-height: 40px; font: inherit; font-size: 13.5px;
+    color: var(--text-body); background: var(--bg-page);
+    border: 1px solid var(--line-strong); border-radius: var(--radius-1); padding: 8px 10px;
+  }
+  #chorus .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+
+  /* --- drawer: inclusion and position are ONE control --------------------- */
+  #chorus-order { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chorus-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px 4px 6px; height: 28px;
+    background: var(--bg-inset); border: var(--edge-w) solid var(--line);
+    border-left: var(--edge-status-w) solid transparent;
+    border-radius: var(--radius-1); cursor: pointer; user-select: none;
+    transition: var(--transition);
+  }
+  .chorus-row[aria-pressed="true"] {
+    background: var(--bg-panel); border-left-color: var(--id-edge);
+  }
+  .chorus-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .chorus-row .drag { color: var(--ink-4); cursor: grab; }
+  .chorus-row[aria-pressed="false"] .drag { visibility: hidden; }
+  .chorus-row.dragging { opacity: .5; }
+  .chorus-order-n {
+    font: 500 12px/1 var(--font-mono); color: var(--text-strong);
+    min-width: 11px; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  .chorus-row[aria-pressed="false"] .chorus-order-n { color: var(--ink-4); }
+  .chorus-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--id-fill); flex: none; }
+  .chorus-row[aria-pressed="false"] .chorus-dot { background: none; border: 1.5px solid var(--ink-4); }
+  .chorus-name { font-size: 12.5px; font-weight: 600; color: var(--text-strong); }
+  .chorus-row[aria-pressed="false"] .chorus-name { font-weight: 400; color: var(--text-quiet); }
+
+  /* stepper: a browser spinner is 11px of arrow and cannot match a hairline system */
+  .stepper { display: inline-flex; align-items: center; height: 28px;
+             border: var(--edge-w) solid var(--line); border-radius: var(--radius-1); }
+  .stepper button { width: 26px; height: 100%; display: inline-flex; align-items: center;
+             justify-content: center; background: var(--bg-inset); border: 0;
+             color: var(--text-quiet); cursor: pointer; }
+  .stepper button:hover { color: var(--text-strong); background: var(--bg-panel); }
+  .stepper button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .stepper output { width: 26px; text-align: center; font: 500 12px/1 var(--font-mono);
+             color: var(--text-strong); font-variant-numeric: tabular-nums; }
+
+  /* 2-4 short options segment; 5+ take a listbox. Nothing takes a raw select. */
+  .seg { display: inline-flex; height: 28px; border: var(--edge-w) solid var(--line);
+         border-radius: var(--radius-1); overflow: hidden; }
+  .seg button { padding: 0 10px; background: var(--bg-inset); border: 0; cursor: pointer;
+         font: 500 12px/1 var(--font-sans); color: var(--text-quiet); }
+  .seg button[aria-checked="true"] { background: var(--bg-panel); color: var(--text-strong); }
+  .seg button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .kbd-hint { font: 400 11px/1 var(--font-mono); color: var(--text-on-accent); opacity: .8; }
+  #chorus button.fire, #chorus button.abort {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px;
+  }
+  #chorus button.fire {
+    background: var(--accent); color: var(--text-on-accent); border: 0; border-radius: var(--radius-1);
+    padding: 7px 18px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  #chorus button.fire:hover { filter: brightness(1.08); }
+  #chorus button.abort {
+    background: none; color: var(--text-quiet); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-1); padding: 0 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  #chorus button.abort:hover { color: var(--err-text); border-color: var(--err-text); }
+  #chorus button.fire:focus-visible, #chorus button.abort:focus-visible {
+    outline: none; box-shadow: var(--focus-ring);
+  }
+  #chorus .status { font-size: 12px; color: var(--text-quiet); margin-left: auto; }
+  #chorus .hint-order { font-size: 12px; color: var(--text-quiet); }
+  /* chorusd runs round 0 AND `rounds` more, so the stepper's N is exchanges AFTER
+     the opening prompt, not passes. Firing "1" really does prompt twice. Rather
+     than change a live backend's semantics, the control says what it counts and
+     this spells out the total. */
+  #chorus .rounds-hint { font: 400 11.5px/1 var(--font-mono); color: var(--text-quiet); }
+
+  /* zoom: one pane takes the whole viewport */
+  body.zoomed .grid .pane { display: none; }
+  body.zoomed .grid .pane.zoom {
+    display: flex; position: fixed; inset: 10px; z-index: 10;
+  }
+
+  /* solo (?only=agent): single pane, full viewport, same clipboard wiring */
+  body.solo .grid { display: flex; }
+  body.solo .pane { flex: 1; }
+</style>
+</head>
+<body>
+<!-- Paste as the FIRST child of <body> in portal/portal/index.html and in the
+     dashboard template. One inline sprite, no build step, no extra request.
+     Reference with:  <svg class="icon" aria-hidden="true"><use href="#i-zoom"/></svg>
+     currentColor works because the sprite is same-document. An EXTERNAL
+     <use href="icons.svg#i-zoom"> does not reliably inherit currentColor,
+     which is why this is inline rather than a separate file. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-zoom" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.25 2.75H2.75V6.25"/>
+      <path d="M9.75 2.75h3.5v3.5"/>
+      <path d="M6.25 13.25H2.75V9.75"/>
+      <path d="M9.75 13.25h3.5V9.75"/>
+    </g>
+  </symbol>
+  <symbol id="i-popout" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 2.75h3.75V6.5"/>
+      <path d="M13.25 2.75 8.25 7.75"/>
+      <path d="M11 9.25v4H2.75V5h4"/>
+    </g>
+  </symbol>
+  <symbol id="i-reconnect" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13.25 8A5.25 5.25 0 1 1 11.6 4.15"/>
+      <path d="M13.25 2.75V5.5h-2.75"/>
+    </g>
+  </symbol>
+  <symbol id="i-broadcast" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 7.25a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5"/>
+      <path d="M10.6 5.4a3.7 3.7 0 0 1 0 5.2"/>
+      <path d="M5.4 5.4a3.7 3.7 0 0 0 0 5.2"/>
+      <path d="M12.7 3.3a6.7 6.7 0 0 1 0 9.4"/>
+      <path d="M3.3 3.3a6.7 6.7 0 0 0 0 9.4"/>
+    </g>
+  </symbol>
+  <symbol id="i-bell" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.25 11.25V7.5a3.75 3.75 0 0 1 7.5 0v3.75"/>
+      <path d="M2.75 11.25h10.5"/>
+      <path d="M6.6 13.25a1.5 1.5 0 0 0 2.8 0"/>
+    </g>
+  </symbol>
+  <symbol id="i-help" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 1.75a6.25 6.25 0 1 1 0 12.5 6.25 6.25 0 0 1 0-12.5"/>
+      <path d="M6.3 6.1a1.75 1.75 0 1 1 2.5 1.6c-.5.3-.8.7-.8 1.3v.3"/>
+      <path d="M8 11.4v.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-sun" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 5.25a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5"/>
+      <path d="M8 1.5v1.5"/>
+      <path d="M8 13v1.5"/>
+      <path d="M1.5 8h1.5"/>
+      <path d="M13 8h1.5"/>
+      <path d="M3.4 3.4l1.05 1.05"/>
+      <path d="M11.55 11.55l1.05 1.05"/>
+      <path d="M12.6 3.4l-1.05 1.05"/>
+      <path d="M4.45 11.55 3.4 12.6"/>
+    </g>
+  </symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.4 2.5a5.75 5.75 0 1 0 3.1 8.5A6.2 6.2 0 0 1 10.4 2.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-mark" viewBox="-119 -789 829 829"><g transform="scale(1 -1)" fill="currentColor" stroke="currentColor" stroke-width="48" stroke-linejoin="round"><path d="M357.70703125 763C79.70703125 763 28.70703125 545 28.70703125 328C28.70703125 159 120.70703125 -14 313.70703125 -14C481.70703125 -14 561.70703125 59 561.70703125 59V186H515.70703125C515.70703125 186 539.70703125 38 329.70703125 38C204.70703125 38 133.70703125 187 133.70703125 311C133.70703125 479 140.70703125 714 351.70703125 714C469.70703125 714 504.70703125 672 504.70703125 597H538.70703125V721C538.70703125 721 478.70703125 763 357.70703125 763Z"/></g></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 4.5v7"/>
+      <path d="M4.5 8h7"/>
+    </g>
+  </symbol>
+  <symbol id="i-minus" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 8h7"/>
+    </g>
+  </symbol>
+  <symbol id="i-drag" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.5 6h5"/>
+      <path d="M5.5 10h5"/>
+    </g>
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 4.5 11.5 11.5"/>
+      <path d="M11.5 4.5 4.5 11.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-state-live" viewBox="0 0 16 16">
+    <g fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3.75a4.25 4.25 0 1 1 0 8.5 4.25 4.25 0 0 1 0-8.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-state-waiting" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3.75a4.25 4.25 0 1 1 0 8.5 4.25 4.25 0 0 1 0-8.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-state-blocked" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 3.75a4.25 4.25 0 1 1 0 8.5 4.25 4.25 0 0 1 0-8.5"/>
+      <path d="M5.75 8h4.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-state-retrying" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.25 8A4.25 4.25 0 1 1 10.9 4.9"/>
+      <path d="M12.25 3.5V6h-2.5"/>
+    </g>
+  </symbol>
+  <symbol id="i-state-dead" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.25 5.25 10.75 10.75"/>
+      <path d="M10.75 5.25 5.25 10.75"/>
+    </g>
+  </symbol>
+</svg>
+  <header class="bar">
+    <h1><svg class="icon" aria-hidden="true"><use href="#i-mark"></use></svg> <span class="accent">Portal</span></h1>
+    <span class="sub" id="banner"></span>
+    <button id="doorbell" type="button" aria-pressed="true"
+            title="ON: new mail rings the recipient's running session. OFF: it waits for the next human prompt.">
+      <svg class="icon" aria-hidden="true"><use href="#i-bell"></use></svg>
+      <span class="bell-dot" aria-hidden="true"></span>
+      doorbell <span class="st" id="doorbell-st"></span>
+    </button>
+    <div id="theme-seg" role="radiogroup" aria-label="Colour theme">
+      <button type="button" role="radio" data-mode="light" aria-label="Light theme"><svg class="icon" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+      <button type="button" role="radio" data-mode="dark" aria-label="Dark theme"><svg class="icon" aria-hidden="true"><use href="#i-moon"></use></svg></button>
+    </div>
+    <button id="chorus-toggle" type="button" title="send one prompt to several agents in order">
+      <svg class="icon" aria-hidden="true"><use href="#i-broadcast"></use></svg> chorus
+    </button>
+    <button class="icon-btn" id="help-btn" type="button" aria-label="Keyboard shortcuts and help" aria-expanded="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-help"></use></svg>
+    </button>
+    <div id="help-pop" hidden>
+      <kbd>click a name</kbd><span>zoom that pane</span>
+      <kbd>Ctrl+Enter</kbd><span>fire the chorus drawer</span>
+      <kbd>Esc</kbd><span>close this / unzoom</span>
+      <kbd>reconnect</kbd><span>reload a dropped session</span>
+      <kbd>pop out</kbd><span>open one pane in its own tab</span>
+    </div>
+  </header>
+  <nav class="tabbar" id="tabbar" aria-label="Agents"></nav>
+  <main class="grid" id="grid"></main>
+
+  <section id="chorus">
+    <textarea id="chorus-msg" rows="2"
+      placeholder="[CHORUS] prompt — fires to every checked agent, then N rounds of AMQ exchange (Ctrl+Enter to fire)"></textarea>
+    <div class="row">
+      <span class="hint-order">order</span>
+      <ul id="chorus-order"></ul>
+    </div>
+    <div class="row">
+      <span class="hint-order">exchanges</span>
+      <div class="stepper">
+        <button type="button" id="rounds-dn" aria-label="One fewer round"><svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg></button>
+        <output id="chorus-rounds" for="rounds-dn rounds-up">3</output>
+        <button type="button" id="rounds-up" aria-label="One more exchange"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button>
+      </div>
+      <span class="rounds-hint" id="rounds-hint"></span>
+      <div class="seg" id="chorus-mode" role="radiogroup" aria-label="Exchange">
+        <button type="button" role="radio" data-mode="roundrobin" aria-checked="true">round-robin</button>
+        <button type="button" role="radio" data-mode="simultaneous" aria-checked="false">simultaneous</button>
+      </div>
+      <button class="fire" type="button">
+        <svg class="icon" aria-hidden="true"><use href="#i-broadcast"></use></svg>
+        Fire <span class="kbd-hint">Ctrl+Enter</span>
+      </button>
+      <button class="abort" type="button">Abort</button>
+      <span class="status">idle</span>
+    </div>
+  </section>
+
+<script>
+(async () => {
+  // ---- the flock, from one file ----------------------------------------------
+  // agents.json (the roster, docs/LAYOUT.md rule 2) is the single source for panes, colours,
+  // grid, banner and the chorus row. chorusd.py reads the same file. Adding an agent is one entry there.
+  let cfg = { site: location.hostname, orchestrator: null, agents: [] };
+  try {
+    const r = await fetch("agents.json", { cache: "no-store" });
+    if (r.ok) cfg = { ...cfg, ...(await r.json()) };
+  } catch (e) { console.warn("agents.json unreadable", e); }
+  const AGENTS = cfg.agents || [];
+
+  // --- theme ------------------------------------------------------------------
+  // Chrome and terminals move together. The chrome is tokens.css under
+  // [data-theme]; the terminals are xterm.js palettes that ship in agents.json,
+  // BOTH of them, because the ttyd unit can only be baked with one at render time
+  // and the operator wants to switch without a redeploy. ttyd 1.7.7 exposes its
+  // Terminal as window.term on the iframe and we are same-origin with it -- the
+  // clipboard bridge below already relies on exactly that, so this is the same
+  // proven reach, not a new assumption.
+  const TERM_THEMES = cfg.theme || {};
+  const TERMS = new Set();          // live xterm instances, one per connected pane
+  let themeMode = (() => {
+    try { return localStorage.getItem("flock-theme") || TERM_THEMES.mode || "light"; }
+    catch { return TERM_THEMES.mode || "light"; }   // private windows throw on access
+  })();
+  const xtermTheme = mode => {
+    const t = TERM_THEMES[mode];
+    if (!t) return null;
+    const { selection, ...rest } = t;               // xterm calls it selectionBackground
+    return { ...rest, selectionBackground: selection };
+  };
+  const paintTerm = term => {
+    const t = xtermTheme(themeMode);
+    if (!t) return;
+    // xterm 5 takes the setter; keep the 4.x path so a ttyd bump degrades to a
+    // stale palette rather than a thrown exception in the middle of the toggle.
+    try { term.options.theme = t; } catch { try { term.setOption("theme", t); } catch {} }
+  };
+  function applyTheme() {
+    document.documentElement.dataset.theme = themeMode;
+    for (const b of document.querySelectorAll("#theme-seg button"))
+      b.setAttribute("aria-checked", String(b.dataset.mode === themeMode));
+    TERMS.forEach(paintTerm);
+  }
+  for (const b of document.querySelectorAll("#theme-seg button")) {
+    b.addEventListener("click", () => {
+      themeMode = b.dataset.mode;
+      try { localStorage.setItem("flock-theme", themeMode); } catch {}
+      applyTheme();
+    });
+  }
+
+  // help: the instruction string used to live in the header; a product at this
+  // level does not explain itself in its chrome.
+  const helpBtn = document.getElementById("help-btn"), helpPop = document.getElementById("help-pop");
+  const setHelp = open => { helpPop.hidden = !open; helpBtn.setAttribute("aria-expanded", String(open)); };
+  helpBtn.addEventListener("click", e => { e.stopPropagation(); setHelp(helpPop.hidden); });
+  document.addEventListener("click", e => { if (!helpPop.hidden && !helpPop.contains(e.target)) setHelp(false); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && !helpPop.hidden) setHelp(false); });
+  const labelOf = b => b.label ?? b.name;
+
+  for (const b of AGENTS) document.documentElement.style.setProperty(`--${b.name}`, b.color);
+  applyTheme();
+  document.getElementById("banner").textContent =
+    AGENTS.map(labelOf).join(" · ") + " — " + cfg.site;
+
+  // Grid: the first agent takes the tall left pane; the rest fill two rows on
+  // the right. With N-1 right-hand agents and cols = ceil((N-1)/2) columns,
+  // row 2 takes the last `cols` agents and row 1 the remainder, stretched.
+  const grid = document.getElementById("grid");
+  const layout = () => {
+    if (AGENTS.length < 2) { grid.style.display = "flex"; return; }
+    const rest = AGENTS.slice(1); const cols = Math.ceil(rest.length / 2);
+    const row2 = rest.slice(rest.length - cols), row1 = rest.slice(0, rest.length - cols);
+    const spread = row => {
+      if (!row.length) return row2.map(b => b.name);          // nothing above: repeat row 2
+      const out = []; const base = Math.floor(cols / row.length); let extra = cols - base * row.length;
+      for (const b of row) { const n = base + (extra > 0 ? 1 : 0); if (extra > 0) extra--; for (let i = 0; i < n; i++) out.push(b.name); }
+      return out;
+    };
+    const first = AGENTS[0].name;
+    grid.style.gridTemplateColumns = `2fr ${"1fr ".repeat(cols).trim()}`;
+    grid.style.gridTemplateAreas = `"${first} ${spread(row1).join(" ")}" "${first} ${spread(row2).join(" ")}"`;
+  };
+  layout();
+
+  // Served over HTTPS via Caddy: same-origin /term/<agent>/ (ttyd -b base path).
+  // Served over plain HTTP (preview): talk to the ttyd ports directly.
+  const viaCaddy = location.protocol === "https:";
+  const urlFor = b => viaCaddy
+    ? `/term/${b.name}/`
+    : `http://${location.hostname}:${b.port}/`;
+
+  // ?only=<agent> renders a single full-viewport pane — used by the pop-out control
+  // so dedicated tabs keep the clipboard wiring below (raw /term/<agent>/ has
+  // none of it: no OSC 52 copy handler, no paste interception).
+  const solo = new URLSearchParams(location.search).get("only");
+  const shown = solo ? AGENTS.filter(b => b.name === solo) : AGENTS;
+  if (solo && shown.length) {
+    document.body.classList.add("solo");
+    document.title = `${labelOf(shown[0])} — Portal`;
+  }
+
+  for (const b of (shown.length ? shown : AGENTS)) {
+    const pane = document.createElement("section");
+    pane.className = "pane";
+    pane.dataset.agent = b.name;
+    pane.style.gridArea = b.name;
+    // tokens.css derives --id-edge and --id-fill from the hue and retunes them per
+    // theme; a raw hex cannot be retuned and fails contrast on one ground or the other.
+    // data-agent AND --agent-h go on the same element on purpose: tokens.css
+    // declares --id-edge/--id-fill on [data-agent], because a var() inside a
+    // custom property is substituted where it is DECLARED. Declared on :root it
+    // resolves the hue at :root, where there is none, and every pane comes out
+    // the same colour -- which is what shipped until 2026-09-11.
+    pane.dataset.agent = b.name;
+    pane.style.setProperty("--agent-h", b.hue);
+    pane.innerHTML = `
+      <div class="head">
+        <svg class="icon state" aria-hidden="true"><use href="#i-state-waiting"></use></svg>
+        <span class="name">${labelOf(b)}</span>
+        <span class="chip" hidden></span>
+        <span class="hint"></span>
+        <span class="tools">
+          <button class="icon-btn paste" aria-label="Paste clipboard into ${b.name}"><svg class="icon" aria-hidden="true"><use href="#i-popout"></use></svg></button>
+          <button class="icon-btn reload" aria-label="Reconnect ${b.name}"><svg class="icon" aria-hidden="true"><use href="#i-reconnect"></use></svg></button>
+          <button class="icon-btn pop" aria-label="Open ${b.name} in its own tab"><svg class="icon" aria-hidden="true"><use href="#i-popout"></use></svg></button>
+        </span>
+      </div>
+      <iframe src="${urlFor(b)}" title="${b.name}" allow="clipboard-read; clipboard-write"></iframe>`;
+    grid.appendChild(pane);
+
+    const iframe = pane.querySelector("iframe");
+    const hint = pane.querySelector(".hint");
+
+    // Same-origin superpower: reach into the pane and wire the clipboard
+    // through the parent page's modern clipboard API. ttyd's own copy path
+    // (execCommand) and native Ctrl+V are both unreliable in Firefox iframes.
+    let flashTimer, paneTerm = null;
+    const flash = msg => {
+      hint.textContent = msg;
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => { hint.textContent = ""; }, 1500);
+    };
+    const doPaste = () => {
+      if (!paneTerm) return;
+      navigator.clipboard.readText().then(t => {
+        if (t) { paneTerm.paste(t); flash("pasted ✓"); }
+        iframe.contentWindow?.focus();
+      }).catch(() => flash("clipboard blocked — allow paste in Firefox"));
+    };
+    const wireClipboard = () => {
+      let tries = 0;
+      const attach = () => {
+        let term;
+        try { term = iframe.contentWindow?.term; } catch { return; }
+        if (!term) {
+          if (++tries < 40) setTimeout(attach, 500);
+          else {
+            flash("no clipboard bridge (ttyd changed?)");   // ttyd's xterm global is an internal; say so if it moves
+            // 40 tries at 500ms with no xterm instance: the frame loaded but the
+            // terminal never came up. That is the only "dead" this page can honestly
+            // observe, so it is the only thing that sets it.
+            localState[b.name] = "dead";
+            setPaneState(b.name, "dead");
+          }
+          return;
+        }
+        paneTerm = term;
+        TERMS.add(term);       // a pane that reconnects re-enters here with a new instance
+        paintTerm(term);       // the unit baked one palette; this pane may owe the other
+        // Copy path: Claude Code owns the mouse in these panes and does its
+        // own selection. On release it runs `tmux load-buffer -w`, tmux
+        // forwards it as an OSC 52 escape, and we catch it here and place it
+        // on the real system clipboard. (Reading xterm's own selection under
+        // Claude Code is hopeless -- its TUI redraws race the clipboard.)
+        term.parser.registerOscHandler(52, data => {
+          console.log(`[osc52:${b.name}] arrived len=${data.length}`, data.slice(0, 60));
+          const i = data.indexOf(";");
+          const b64 = i >= 0 ? data.slice(i + 1) : data;
+          if (b64 === "?") return true;   // clipboard query, not a write
+          try {
+            const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+            const text = new TextDecoder().decode(bytes);
+            // iframe's navigator, not the parent's: the user's activation
+            // gesture lives on the iframe (coordinator's review, adopted)
+            if (text) iframe.contentWindow.navigator.clipboard.writeText(text)
+              .then(() => { console.log(`[osc52:${b.name}] write OK`); flash("copied ✓"); })
+              .catch(e => { console.warn(`[osc52:${b.name}] write FAILED`, e.name, e.message); flash("copy blocked: " + e.name); });
+          } catch (e) { console.warn(`[osc52:${b.name}] decode fail`, e); }
+          return true;
+        });
+        // Paste, two layers:
+        //  1. native paste event (Ctrl+V or the terminal's paste chord) -- no permission
+        //     prompt; we deliver it to the terminal ourselves.
+        //  2. if the native event never fires, fall back to the clipboard
+        //     API (Firefox shows its small "Paste" bubble -- click it).
+        const doc = iframe.contentDocument;
+        let lastNativePaste = 0;
+        doc.addEventListener("paste", e => {
+          lastNativePaste = Date.now();
+          const t = e.clipboardData?.getData("text");
+          if (t && paneTerm) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            paneTerm.paste(t);
+            flash("pasted ✓");
+          }
+        }, true);
+        doc.addEventListener("keydown", e => {
+          const isPaste = (e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v")
+                       || (e.shiftKey && e.key === "Insert");
+          if (!isPaste) return;
+          setTimeout(() => {
+            if (Date.now() - lastNativePaste > 400) doPaste();
+          }, 250);
+        }, true);
+      };
+      attach();
+    };
+    iframe.addEventListener("load", wireClipboard);
+    pane.querySelector(".paste").addEventListener("click", doPaste);
+    pane.querySelector(".head").addEventListener("click", e => {
+      if (e.target.closest("button")) return;
+      const zooming = !pane.classList.contains("zoom");
+      document.querySelectorAll(".pane").forEach(p => p.classList.remove("zoom"));
+      document.body.classList.toggle("zoomed", zooming);
+      if (zooming) pane.classList.add("zoom");
+      pane.querySelector(".hint").textContent = zooming ? "zoomed — click to restore" : "";
+    });
+    pane.querySelector(".reload").addEventListener("click", () => {
+      localState[b.name] = "retrying";
+      setPaneState(b.name, "retrying");
+      iframe.src = urlFor(b);
+    });
+    iframe.addEventListener("load", () => {
+      // the frame is back: hand the pane to chorusd's view again
+      delete localState[b.name];
+      paneState[b.name] = null;
+    });
+    const popBtn = pane.querySelector(".pop");
+    if (document.body.classList.contains("solo")) popBtn.style.display = "none";
+    popBtn.addEventListener("click", () => {
+      window.open(`${location.pathname}?only=${b.name}`, "_blank");
+    });
+  }
+
+  // ---- doorbell toggle (chorusd /doorbell; ON by default, persisted server-side) ----
+  const bellBtn = document.getElementById("doorbell");
+  const bellSt = document.getElementById("doorbell-st");
+  let bellState = true;
+  function paintBell(v) {
+    bellState = !!v.on;
+    bellBtn.setAttribute("aria-pressed", String(bellState));
+    const last = Object.entries(v.last_ring_ago || {}).sort((a, b) => a[1] - b[1])[0];
+    const busy = Object.keys(v.busy || {});
+    paintPaneStates(v);
+    const withheld = Object.values(v.deferred || {}).reduce((a, n) => a + n, 0);
+    bellSt.classList.toggle("withheld", withheld > 0);
+    bellSt.textContent = withheld > 0 ? `${withheld} withheld` : !v.on ? "off" :
+      (v.chorus_active ? "paused: chorus running" :
+       (last ? `rang ${labelOf(AGENTS.find(b => b.name === last[0])) || last[0]} ${last[1] < 90 ? last[1] + "s" : Math.round(last[1] / 60) + "m"} ago` : "on") +
+       (busy.length ? ` · busy: ${busy.join(" ")}` : ""));
+  }
+  async function bellRefresh() {
+    if (location.protocol !== "https:") { bellSt.textContent = "needs https portal"; return; }
+    const r = await fetch("/chorus/doorbell", { cache: "no-store" }).catch(() => null);
+    if (!r || !r.ok) { bellSt.textContent = "chorusd unreachable"; return; }
+    paintBell(await r.json());
+  }
+  bellBtn.addEventListener("click", async () => {
+    const want = !bellState;
+    const r = await fetch("/chorus/doorbell", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: want }),
+    }).catch(() => null);
+    if (r && r.ok) paintBell(await r.json()); else bellRefresh();
+  });
+  bellRefresh(); setInterval(bellRefresh, 10000);
+
+  // ---- chorus drawer -------------------------------------------------------
+  const drawer = document.getElementById("chorus");
+  const chorusStatus = drawer.querySelector(".status");
+  const chorusMsg = document.getElementById("chorus-msg");
+  document.getElementById("chorus-toggle").addEventListener("click", () => {
+    drawer.classList.toggle("open");
+    if (drawer.classList.contains("open")) chorusMsg.focus();
+  });
+
+  // --- pane state -----------------------------------------------------------
+  // Five states from two sources, and the split is deliberate:
+  //   chorusd knows what the AGENT is doing   -> blocked (usage limit), live, waiting
+  //   the portal knows what the PANE is doing -> retrying, dead
+  // A broken pane wins over a busy agent: if the terminal is not connected, what the
+  // agent is up to is unknowable from here and saying "live" would be a guess.
+  const localState = {};          // agent -> "retrying" | "dead", portal-side only
+  const paneState = {};           // agent -> the state currently painted
+  const CHIP = { blocked: "LIMIT", retrying: "RECONNECT", dead: "EXITED" };
+
+  function setPaneState(name, st, detail) {
+    if (paneState[name] === st + (detail || "")) return;
+    paneState[name] = st + (detail || "");
+    const pane = document.querySelector(`.pane[data-agent="${name}"]`);
+    const tab = tabbar.querySelector(`button[data-agent="${name}"]`);
+    for (const el of [pane, tab]) {
+      if (!el) continue;
+      el.dataset.paneState = st;
+      const use = el.querySelector(".state use");   // not ".icon use": the pane's action buttons are icons too
+      if (use) use.setAttribute("href", `#i-state-${st}`);
+    }
+    if (!pane) return;
+    const chip = pane.querySelector(".chip");
+    const label = CHIP[st];
+    chip.hidden = !label;
+    if (label) chip.textContent = detail ? `${label} · ${detail}` : label;
+  }
+
+  // chorusd's half, refreshed by the same doorbell poll that was already running --
+  // no second loop, no second endpoint.
+  function paintPaneStates(v) {
+    for (const b of AGENTS) {
+      const n = b.name;
+      if (localState[n]) { setPaneState(n, localState[n]); continue; }
+      const lim = (v.limit || {})[n];
+      if (lim) setPaneState(n, "blocked", lim === "credits" ? "credits" : "");
+      else if ((v.busy || {})[n]) setPaneState(n, "live");
+      else setPaneState(n, "waiting");
+    }
+  }
+
+  // --- stacked breakpoint: tabs pick the one visible pane ------------------
+  // The tab bar is always built and CSS decides whether it shows, so there is no
+  // resize listener and nothing to keep in sync with the viewport. Each tab
+  // carries its agent's status glyph, which is the reason it is not just names:
+  // a blocked agent is visible without switching to it.
+  const tabbar = document.getElementById("tabbar");
+  function showPane(name) {
+    for (const p of document.querySelectorAll(".pane"))
+      p.setAttribute("aria-current", String(p.dataset.agent === name));
+    for (const t of tabbar.querySelectorAll("button"))
+      t.setAttribute("aria-selected", String(t.dataset.agent === name));
+  }
+  function buildTabs() {
+    tabbar.innerHTML = "";
+    for (const b of AGENTS) {
+      const t = document.createElement("button");
+      t.type = "button";
+      t.dataset.agent = b.name;   // [data-agent] is what tokens.css hangs --id-* on
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-selected", "false");
+      t.style.setProperty("--agent-h", b.hue);
+      t.dataset.paneState = "waiting";
+      t.innerHTML = '<svg class="icon state" aria-hidden="true"><use href="#i-state-waiting"></use></svg>'
+                  + '<span>' + labelOf(b) + '</span>';
+      t.addEventListener("click", () => showPane(b.name));
+      tabbar.appendChild(t);
+    }
+    if (AGENTS.length) showPane(AGENTS[0].name);
+  }
+
+  // --- the order list: inclusion AND position in one control ----------------
+  // Was four bare checkboxes plus a separate "a -> b -> c" readout. Checkboxes
+  // cannot express order, so the order lived in the sequence you happened to click
+  // and was shown somewhere else. Now the list IS the order: click to include,
+  // drag to reorder, and the numeral is the position.
+  const orderList = document.getElementById("chorus-order");
+  const chorusSeq = [];                       // still the single source of truth
+
+  function renderOrder() {
+    orderList.innerHTML = "";
+    // included agents first, in firing order, then the rest in roster order
+    const rest = AGENTS.filter(b => !chorusSeq.includes(b.name)).map(b => b.name);
+    for (const name of [...chorusSeq, ...rest]) {
+      const b = AGENTS.find(x => x.name === name);
+      const on = chorusSeq.includes(name);
+      const li = document.createElement("li");
+      li.className = "chorus-row";
+      li.dataset.agent = name;
+      li.style.setProperty("--agent-h", b.hue);
+      li.setAttribute("role", "button");
+      li.setAttribute("tabindex", "0");
+      li.setAttribute("aria-pressed", String(on));
+      li.draggable = on;
+      li.innerHTML =
+        '<svg class="icon drag" aria-hidden="true"><use href="#i-drag"></use></svg>' +
+        '<span class="chorus-order-n">' + (on ? chorusSeq.indexOf(name) + 1 : "—") + "</span>" +
+        '<span class="chorus-dot"></span>' +
+        '<span class="chorus-name">' + labelOf(b) + "</span>";
+      const toggle = () => {
+        const i = chorusSeq.indexOf(name);
+        if (i === -1) chorusSeq.push(name); else chorusSeq.splice(i, 1);
+        renderOrder();
+      };
+      li.addEventListener("click", toggle);
+      li.addEventListener("keydown", e => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+      });
+      li.addEventListener("dragstart", e => {
+        e.dataTransfer.setData("text/plain", name);
+        e.dataTransfer.effectAllowed = "move";
+        li.classList.add("dragging");
+      });
+      li.addEventListener("dragend", () => li.classList.remove("dragging"));
+      li.addEventListener("dragover", e => { if (chorusSeq.includes(name)) e.preventDefault(); });
+      li.addEventListener("drop", e => {
+        e.preventDefault(); e.stopPropagation();
+        const from = e.dataTransfer.getData("text/plain");
+        const a = chorusSeq.indexOf(from), bIdx = chorusSeq.indexOf(name);
+        if (a === -1 || bIdx === -1 || a === bIdx) return;
+        chorusSeq.splice(bIdx, 0, chorusSeq.splice(a, 1)[0]);
+        renderOrder();
+      });
+      orderList.appendChild(li);
+    }
+  }
+  renderOrder();
+  buildTabs();          // after the panes exist: showPane() needs them to mark one current
+
+  // --- rounds stepper --------------------------------------------------------
+  const roundsOut = document.getElementById("chorus-rounds");
+  let rounds = 3;
+  const roundsHint = document.getElementById("rounds-hint");
+  const setRounds = n => {
+    rounds = Math.min(10, Math.max(0, n));
+    roundsOut.textContent = rounds;
+    // chorusd runs round 0 plus `rounds` more: firing "1" prompts twice.
+    roundsHint.textContent = rounds === 0
+      ? "opening prompt only"
+      : `opening + ${rounds} = ${rounds + 1} passes`;
+  };
+  setRounds(3);
+  document.getElementById("rounds-dn").addEventListener("click", () => setRounds(rounds - 1));
+  document.getElementById("rounds-up").addEventListener("click", () => setRounds(rounds + 1));
+
+  // --- exchange mode ---------------------------------------------------------
+  // Two segments because chorusd has exactly two modes. Design's third option
+  // ("relay") does not exist in chorusd and would have been a control that did
+  // nothing when pressed; the operator confirms it is obsolete.
+  let chorusMode = "roundrobin";
+  for (const btn of document.querySelectorAll("#chorus-mode button")) {
+    btn.addEventListener("click", () => {
+      chorusMode = btn.dataset.mode;
+      for (const o of document.querySelectorAll("#chorus-mode button"))
+        o.setAttribute("aria-checked", String(o.dataset.mode === chorusMode));
+    });
+  }
+
+  async function fireChorus() {
+    const agents = [...chorusSeq];
+    const message = chorusMsg.value.trim();
+    const mode = chorusMode;
+    if (!message || !agents.length) {
+      chorusStatus.textContent = "need a prompt and at least one agent (click them in firing order)";
+      return;
+    }
+    if (!viaCaddy) {
+      chorusStatus.textContent = "chorus needs the https portal (Caddy route)";
+      return;
+    }
+    const r = await fetch("/chorus/fire", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, birds: agents, rounds, mode }),   // the daemon's own key name for the list
+    }).catch(() => null);
+    if (!r) { chorusStatus.textContent = "chorus service unreachable — is stage 3 installed?"; return; }
+    if (r.status === 409) { chorusStatus.textContent = "a chorus is already running (Abort to stop it)"; return; }
+    if (!r.ok) { chorusStatus.textContent = `fire failed (HTTP ${r.status})`; return; }
+    chorusMsg.value = "";
+    chorusStatus.textContent = "fired ✓";
+  }
+  drawer.querySelector(".fire").addEventListener("click", fireChorus);
+  chorusMsg.addEventListener("keydown", e => {
+    if (e.ctrlKey && e.key === "Enter") fireChorus();
+  });
+  drawer.querySelector(".abort").addEventListener("click", () =>
+    fetch("/chorus/abort", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {}));
+
+  setInterval(async () => {
+    if (!drawer.classList.contains("open") || !viaCaddy) return;
+    const r = await fetch("/chorus/status").catch(() => null);
+    if (!r || !r.ok) return;
+    const s = await r.json();
+    chorusStatus.textContent = s.active
+      ? (s.mode === "roundrobin"
+          ? `#${s.cid} round ${s.round}/${s.rounds} — ${s.waiting[0] || "…"} responding (${s.idx + 1} of ${s.sequence.length})`
+          : `#${s.cid} round ${s.round}/${s.rounds} — waiting on: ${s.waiting.join(", ") || "…"}`)
+      : (s.log?.length ? s.log[s.log.length - 1] : "idle");
+  }, 1500);
+})();
+</script>
+</body>
+</html>

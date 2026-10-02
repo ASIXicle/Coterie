@@ -1,0 +1,24 @@
+# tools/verify-mirror.pairs -- what verify-mirror.sh section 3 compares: LIVE SOURCE per line.
+# LIVE is the installed file; the literal $SRV is replaced by the portal's web directory
+# (install.sh passes /srv/portal/portal) and nothing else is interpreted. SOURCE is its path in
+# this tree; a path under portal/build/ is a file install.sh rendered from your roster. These
+# match what install.sh installs; edit them if your layout differs, and add a line for every
+# file you deploy by hand, or the tool stays silently green about it.
+$SRV/index.html                         portal/portal/index.html
+$SRV/agents.json                        config/agents.json
+$SRV/tokens.css                         portal/portal/tokens.css
+/opt/portal/chorusd.py                  portal/chorus/chorusd.py
+/usr/local/bin/send-keys-to             portal/build/send-keys-to
+/usr/local/bin/agent-stop-hook          portal/build/agent-stop-hook
+/etc/sudoers.d/portal                   portal/build/sudoers.portal
+/etc/tmux.conf                          portal/build/tmux.conf
+/opt/memory/server.py                   memory/server.py
+/opt/memory/maildir.py                  memory/maildir.py
+/opt/memory/heads/score.py              memory/heads/score.py
+/opt/shield/hook-detect.py              hookandshield/hook-detect.py
+# units: a drop-in or an edit in /etc that never came back to the tree reads DIFFERS here; one
+# that is not installed on this machine (the git server, if you chose another) reads NOTE
+/etc/systemd/system/memory.service      memory/systemd/memory.service
+/etc/systemd/system/chorusd.service     portal/build/chorusd.service
+/etc/systemd/system/hook-detect.service hookandshield/systemd/hook-detect.service
+/etc/systemd/system/forge.service       forge/forge.service

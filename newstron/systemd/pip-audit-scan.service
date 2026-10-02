@@ -1,0 +1,18 @@
+# pip-audit-scan.service — weekly pip-audit of the memory and news venvs; findings go to the
+# memory server's news API (docs/LAYOUT.md Units table).
+[Unit]
+Description=Weekly pip-audit of the service venvs
+After=network-online.target memory.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=newstron
+Group=newstron
+EnvironmentFile=/etc/newstron/newstron.env
+ExecStart=/opt/newstron/venv/bin/python3 /opt/newstron/pip-audit-scan.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/newstron

@@ -1,0 +1,41 @@
+# Memory server venv pins (the dashboard runs from the same venv: Flask, chromadb), set
+# 2026-09-15. Rebuild, two steps (torch first, from PyTorch's index ONLY; then the rest from PyPI ONLY):
+#   python3 -m venv <dir> && <dir>/bin/pip install --index-url https://download.pytorch.org/whl/cpu "$(grep '^torch==' requirements.txt)"
+#   <dir>/bin/pip install -r requirements.txt
+# The code's roots plus floors on transitive packages that carry advisories; pip resolves the rest. Floors are the pip-audit fix versions of 2026-09-15;
+# mcp is on the 2.x line since the Phase 1 port (MCPServer; mcp-types comes exact-pinned with it).
+# Held packages are pinned to what is installed (PLAN.md §5).
+mcp>=2.2,<3
+chromadb>=1.5.9,<2
+starlette>=1.3.1
+uvicorn>=0.53
+requests>=2.34.2
+urllib3>=2.7
+idna>=3.15
+PyJWT>=2.13
+python-multipart>=0.0.31
+pydantic-settings>=2.14.2
+# setuptools: torch 2.11.0 depends on setuptools<82. PYSEC-2026-3447 (fix at 83.0.0, a MANIFEST.in
+# matching issue at build time) stays open while torch is held at 2.11 (2026-10-01-ml-stack-a kept the
+# version and changed only the build). Constrain below torch's cap to make the resolution deterministic.
+setuptools<82
+PyYAML>=6.0.3
+flask
+# server.py imports trafilatura (web_fetch tool); missed in the first cut, venv-next failed the
+# import smoke on 2026-09-15 without it.
+trafilatura>=2.2
+# held: embedder stack (sha-pinned voyage-4-nano snapshot, trust_remote_code=True). 2026-10-01-ml-stack-a:
+# - transformers stays on 4.57.6: the model's own code calls create_causal_mask(input_embeds=...,
+#   cache_position=...), which transformers removed after 5.8, so a 5.x bump breaks the first encode().
+# - sentence-transformers 6 needs transformers 5, so it stays on the 5.x line; 5.7.0 carries the
+#   CVE-2026-68770 fix (5.6).
+# - torch is the CPU-only build of the same 2.11.0 from PyTorch's index, without the ~1.6 GB of CUDA
+#   packages the PyPI build pulls. A GPU host replaces the +cpu pin with plain torch==2.11.0 and drops
+#   the index line; any changed venv passes that directory's cosine gate before it serves a store.
+# - No --extra-index-url here (adversarial pass, 2026-10-02): with two indexes pip takes each
+#   unpinned package from whichever offers the higher version, the 2022 dependency-confusion shape.
+#   torch is installed first from PyTorch's index alone (above, and install.sh stage 3); by the time
+#   this file is read its pin below is already satisfied, so nothing here reaches past PyPI.
+sentence-transformers==5.7.0
+transformers==4.57.6
+torch==2.11.0+cpu

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 800" width="900" height="800" role="img" aria-labelledby="ttl">
+  <title id="ttl">Mail, and how a pane gets woken</title>
+  <defs>
+    <marker id="dA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7f8b94"></path></marker>
+  </defs>
+  <rect width="900" height="800" fill="#f3f5f7"></rect>
+  <text x="16" y="28" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#616c75">A sender session · M memory server (amq_send) · Q mailbox of B (new/)</text>
+  <text x="16" y="44" font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#616c75">C orchestrator (doorbell thread) · B recipient pane · L doorbell ledger</text>
+
+  <g fill="#fafcfe" stroke="#ccd5dc">
+    <circle cx="548" cy="76" r="13"></circle><circle cx="612" cy="76" r="13"></circle><circle cx="676" cy="76" r="13"></circle><circle cx="740" cy="76" r="13"></circle><circle cx="804" cy="76" r="13"></circle><circle cx="868" cy="76" r="13"></circle>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="11" font-weight="700" fill="#1e2328" text-anchor="middle">
+    <text x="548" y="80">A</text><text x="612" y="80">M</text><text x="676" y="80">Q</text><text x="740" y="80">C</text><text x="804" y="80">B</text><text x="868" y="80">L</text>
+  </g>
+  <g stroke="#ccd5dc" stroke-dasharray="3 4">
+    <path d="M548,90 L548,750"></path><path d="M612,90 L612,750"></path><path d="M676,90 L676,750"></path><path d="M740,90 L740,750"></path><path d="M804,90 L804,750"></path><path d="M868,90 L868,750"></path>
+  </g>
+  <rect x="12" y="344" width="872" height="116" fill="#eaeef2"></rect>
+  <rect x="12" y="344" width="3" height="116" fill="#afabbc"></rect>
+  <g stroke="#dbe2e8">
+    <path d="M12,112 L884,112"></path><path d="M12,170 L884,170"></path><path d="M12,228 L884,228"></path><path d="M12,286 L884,286"></path><path d="M12,344 L884,344"></path><path d="M12,402 L884,402"></path><path d="M12,460 L884,460"></path><path d="M12,518 L884,518"></path><path d="M12,576 L884,576"></path><path d="M12,634 L884,634"></path><path d="M12,692 L884,692"></path><path d="M12,750 L884,750"></path>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="10" fill="#616c75">
+    <text x="24" y="134">01</text><text x="24" y="192">02</text><text x="24" y="250">03</text><text x="24" y="308">04</text>
+    <text x="24" y="366">05</text><text x="24" y="424">06</text><text x="24" y="482">07</text><text x="24" y="540">08</text>
+    <text x="24" y="598">09</text><text x="24" y="656">10</text><text x="24" y="714">11</text>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#afabbc">
+    <text x="52" y="366">if</text><text x="52" y="424">else</text>
+  </g>
+  <g font-family="Archivo, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1e2328">
+    <text x="92" y="134">amq_send(to=B, subject, body)</text>
+    <text x="92" y="192">Atomic Maildir write (tmp → new)</text>
+    <text x="92" y="250">Poll for filenames only</text>
+    <text x="92" y="308">seen</text>
+    <text x="92" y="366">Hold and coalesce</text>
+    <text x="92" y="424">Type one line into the pane of B</text>
+    <text x="92" y="482">ring (id, message ids, senders)</text>
+    <text x="92" y="540">amq_check · amq_read</text>
+    <text x="92" y="598">Reply only if one is owed</text>
+    <text x="92" y="656">Stop hook posts the agent and the ring id on loopback</text>
+    <text x="92" y="714">ledger: turn-end · answered</text>
+  </g>
+  <g font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#5b666f">
+    <text x="92" y="266">its group can see names, never open a message</text>
+    <text x="92" y="382">B is mid-turn, in a chorus round, cooling down,</text>
+    <text x="92" y="395">or the repeat limit tripped</text>
+    <text x="92" y="440">&#34;[AMQ-CHECK #id] Doorbell: N new AMQ messages from ...&#34;</text>
+    <text x="92" y="556">the file moves new/ → cur/</text>
+    <text x="92" y="614">which rings A in turn</text>
+    <text x="92" y="730">turn-end on the Stop hook; answered once the mail left new/</text>
+    <text x="92" y="743">both timed from the ring</text>
+  </g>
+
+  <g fill="none" stroke="#7f8b94" stroke-width="1.3" marker-end="url(#dA)">
+    <path d="M548,142 L612,142"></path>
+    <path d="M612,200 L676,200"></path>
+    <path d="M740,258 L676,258"></path>
+    <path d="M740,316 L868,316"></path>
+    <path d="M740,374 L756,374 L756,390 L742,390"></path>
+    <path d="M740,432 L804,432"></path>
+    <path d="M740,490 L868,490"></path>
+    <path d="M804,548 L612,548"></path>
+    <path d="M804,664 L740,664"></path>
+    <path d="M740,722 L868,722"></path>
+  </g>
+  <path d="M804,606 L548,606" fill="none" stroke="#7f8b94" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#dA)"></path>
+  <text x="16" y="778" font-family="JetBrains Mono, ui-monospace, monospace" font-size="9.5" fill="#616c75">pull becomes push, and no agent gains read access to another's mail</text>
+  </svg>

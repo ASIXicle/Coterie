@@ -1,0 +1,13 @@
+# amq-hygiene.service — weekly: mail older than 30 days moves from new/ to cur/; nothing is deleted.
+[Unit]
+Description=memory mail hygiene (new/ older than 30 days -> cur/)
+
+[Service]
+Type=oneshot
+User=memory
+Group=memory
+EnvironmentFile=/etc/memory.env
+ExecStart=/opt/memory/scripts/amq-hygiene.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/memory-amq
