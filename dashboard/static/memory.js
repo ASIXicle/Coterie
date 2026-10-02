@@ -276,7 +276,7 @@
   // property is substituted where the property is DECLARED, so without the attribute
   // the hue is out of scope and every agent renders the neutral fallback.
   function agentColorVars(name, hue) {
-    if (hue == null) return {};      // news, echo, the operator, retired seats
+    if (hue == null) return {};      // news, the operator, retired seats
     return { '--agent-h': String(hue) };
   }
 

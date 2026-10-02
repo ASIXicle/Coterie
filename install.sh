@@ -283,7 +283,7 @@ stage6() {
   install -m 0644 "$HERE"/hookandshield/systemd/hook-detect.{service,timer} /etc/systemd/system/ && systemctl daemon-reload
   systemctl enable --now hook-detect.timer >/dev/null && systemctl start hook-detect.service || hold "hook-detect.service failed: journalctl -u hook-detect" || return 1
   tail -1 /var/log/hook-detect/hook-detect.log 2>/dev/null | grep -q CLEAN && ok "hook-detect: CLEAN" || hold "hook-detect did not end in CLEAN: tail /var/log/hook-detect/hook-detect.log" || return 1
-  note "drift-detect (docs/LAYOUT.md §Units) compares deployed files against a release clone at /opt/coterie; install its units once that clone exists (INSTALL §8 item 7) — not automated in this version"
+  note "drift-detect is not in this release (docs/LAYOUT.md reserves its names); until it ships, INSTALL §8 item 7 (tools/verify-mirror.sh) is the by-hand check that installed files still match their source"
 }
 # ---------- 7. optional components ----------
 stage7() {

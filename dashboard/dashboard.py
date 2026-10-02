@@ -52,7 +52,7 @@ MEMORY_URL = os.environ.get("MEMORY_URL", "http://127.0.0.1:8765").rstrip("/")
 DASHBOARD_SECRET = os.environ.get("DASHBOARD_SECRET", "")
 MEMORY_TIMEOUT_S = 10
 MEMORY_CACHE_S = 5          # app.js polls /api/system every second; the server is asked once per 5 s
-ITEMS_FULL_PAGE, ITEMS_META_PAGE = 500, 50000   # the server's caps per call (DESIGN.md §2)
+ITEMS_FULL_PAGE, ITEMS_META_PAGE = 500, 50000   # the server's caps per call
 # --- Agent roster: defined once, in the roster JSON (LAYOUT rule 2) ---
 # COTERIE_AGENTS_JSON overrides; default is the layout's path, then the
 # repo-relative copy (../config/agents.json next to this directory, the release tree's shape).

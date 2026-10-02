@@ -100,7 +100,7 @@ fi
 # the tmux config: behaviour + theme, rendered from the roster's .theme. The pane INTERIORS are
 # terminal content -- no portal CSS can reach them -- so the ttyd theme and this file are the only
 # way the terminals match the chrome.
-# Guard (Directive Five corollary, read first and restore as found): the generated file replaces a
+# Guard (read first and restore as found): the generated file replaces a
 # hand-written one whose clipboard lines the portal's paste bridge depends on. Refuse to install a
 # config that drops any setting that is live right now, whatever the reason.
 if [ -f "$here/build/tmux.conf" ]; then

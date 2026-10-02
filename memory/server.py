@@ -111,8 +111,7 @@ print(f"[persMEM] Opening ChromaDB at: {DATA_DIR}")
 chroma_client = chromadb.PersistentClient(path=DATA_DIR)
 
 # ---------------------------------------------------------------------------
-# Bootstrap history — boot-time permission check (R2 mitigation #1
-# from 2026-09-04 CHORUS bootstrap round). Fail loud at systemd start
+# Bootstrap history — boot-time permission check. Fail loud at systemd start
 # rather than silently at first bootstrap_update three days later.
 # ---------------------------------------------------------------------------
 try:
@@ -222,7 +221,7 @@ print(f"[persMEM] Agent roster: {_ROSTER['path']} "
 
 # ---------------------------------------------------------------------------
 # Server commit — captured at process start so the boot manifest can name
-# the assembly code that produced it (review R2, item 6 `server_commit`).
+# the assembly code that produced it.
 # Cached; changes require a server restart.
 # ---------------------------------------------------------------------------
 _SHA_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
@@ -233,7 +232,7 @@ def _read_git_head(start_dir: str) -> Optional[str]:
 
     `git rev-parse` fails under the service uid on a root-owned deploy
     checkout ("dubious ownership"), which is why `server_commit` read "unknown"
-    from the 2026-09-11 cutover on (review F3). Reading HEAD -> ref -> sha needs
+    from the 2026-09-11 cutover on. Reading HEAD -> ref -> sha needs
     only read access. Covers a plain `.git` directory with a loose ref,
     packed-refs, or a detached HEAD; anything else returns None. Depends on the
     refs staying world-readable (root's umask at pull time); a 0640 ref fails
@@ -418,7 +417,7 @@ async def memory_store(
                     memory is auto-marked as superseded. Use for decisions
                     that override prior decisions (e.g., ceiling 14h → 6h).
     """
-    # H write-time ceiling (review R5, 2026-09-15): handoff entries carry
+    # H write-time ceiling: handoff entries carry
     # 500-word ceiling matching the flock's template. Reject-not-truncate —
     # silently cutting a lane handoff at boot is the inverted-persistence
     # bug the flock's FMs explicitly refuse. Caller trims or splits.
@@ -518,9 +517,8 @@ async def memory_retract(
     atomic store-and-retract.
 
     For the `bootstrap` collection specifically: metadata writes affect
-    what chorus_init ships (a status flip changes the rule fired), so per
-    review R2 fix (b) from the 2026-09-04 bootstrap round the retraction
-    goes through the bootstrap-history file store with mandatory reason
+    what chorus_init ships (a status flip changes the rule fired), so the
+    retraction goes through the bootstrap-history file store with mandatory reason
     and author. Content is unchanged; the sidecar records the metadata
     delta so replay can reconstruct rules.
 
@@ -545,7 +543,7 @@ async def memory_retract(
         now = datetime.now(timezone.utc).isoformat()
 
         # Metadata-only writes on the bootstrap collection go through the
-        # history path (review R2 fix (b), 2026-09-04). Content unchanged.
+        # history path. Content unchanged.
         if collection == "bootstrap":
             if not reason or not reason.strip():
                 return json.dumps({
@@ -920,7 +918,7 @@ def news_purge(max_age_days: int = 12, dry_run: bool = True, tier: Optional[int]
 # name another mailbox".
 
 NEWS_DELIVER_MAX_BYTES = 262144  # a digest is a few KB; this bounds what one call can write
-NEWS_BODY_MAX_BYTES = 1048576    # checked from Content-Length BEFORE the body is read (review F2)
+NEWS_BODY_MAX_BYTES = 1048576    # checked from Content-Length BEFORE the body is read
 _NEWS_LOOPBACK = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 
 
@@ -928,7 +926,7 @@ def _scoped_auth(request: Request, secret: str, api: str, var: str) -> Optional[
     """None when a loopback caller carries `secret` as a bearer token, else the refusal.
     One shape for every scoped HTTP API (/news/*, /dashboard/*), each with a secret of its own.
 
-    Loopback first (review F1): every legitimate caller runs on this host, and the listener
+    Loopback first: every legitimate caller runs on this host, and the listener
     may be LAN-bound. A remote probe gets 403 before anything else, so it learns neither
     whether the API is enabled nor anything about the token. No client address fails closed."""
     host = request.client.host if request.client else None
@@ -951,7 +949,7 @@ def _news_auth(request: Request) -> Optional[JSONResponse]:
 async def _news_body(request: Request, spec: dict) -> tuple[Optional[dict], Optional[JSONResponse]]:
     """Parse the JSON body and type-check it against spec {name: (type, required, default)}.
     Unknown keys are ignored, so a caller cannot smuggle a parameter the route doesn't take.
-    The size is checked from Content-Length before reading (review F2): uvicorn sets no body
+    The size is checked from Content-Length before reading: uvicorn sets no body
     limit, so reading first would let one call hold any amount of memory. No length (chunked)
     is refused too."""
     cl = request.headers.get("content-length", "")
@@ -2199,8 +2197,8 @@ HANDOFF_RECENCY_DAYS = 15
 # Entries declare their own review cadence in-body via
 # `as-of <date> · review-after <date>`. The manifest parses review-after
 # and emits `stale: true` + `owner: <entry_agent>` when today > review-after,
-# so a reader sees the flag in their own boot. Rare-and-named per the review's
-# two conditions (R3): no review-after → no flag (silent, no noise); a
+# so a reader sees the flag in their own boot. Rare-and-named, two
+# conditions: no review-after → no flag (silent, no noise); a
 # stale flag names its owner so it reads as their task in their own boot.
 #
 # Tag rot (finding at item-4 apply time — old tags were as rotted as
@@ -2254,7 +2252,7 @@ def _is_stale(review_after_str: Optional[str]) -> bool:
 def _canonical_meta_for_sha(entry_type: str, status, tags_str: str,
                              history_skipped: bool) -> str:
     """Canonical JSON of the metadata fields the chorus_init assembly reads,
-    for meta_sha256 computation (review R2, item 6). Order-stable via
+    for meta_sha256 computation. Order-stable via
     sort_keys=True; a rule flip caused by metadata change is guaranteed to
     change the meta_sha256 even when the document is untouched."""
     return json.dumps({
@@ -2268,7 +2266,7 @@ def _canonical_meta_for_sha(entry_type: str, status, tags_str: str,
 def _owner_from_id(entry_id: str) -> Optional[str]:
     """Derive an entry's owning bird from a structured ID.
 
-    New patterns (post-2026-09-15 state-split round, review S1 fix):
+    New patterns (since the 2026-09-15 state split):
       state-<bird>             → <bird>
       identity-<bird>[-*]      → <bird>
 
@@ -2290,7 +2288,7 @@ def _resolve_entry_agent(
     tags_set: set,
     owner_meta: str,
 ) -> Optional[str]:
-    """Deterministic ownership resolution (review S1 fix, 2026-09-15).
+    """Deterministic ownership resolution (2026-09-15).
 
     Prior implementation iterated `KNOWN_IDENTITY_AGENTS` as a set, so
     per-process hash randomization could flip ownership on service
@@ -2322,18 +2320,18 @@ def _resolve_entry_agent(
 def _lane_tag(tags_set: set) -> Optional[str]:
     """Return the (deterministic) `lane:<name>` tag's value, or None.
 
-    Lane tags key the assembly-time filter added 2026-09-15 (F13/F18/S3).
+    Lane tags key the assembly-time filter added 2026-09-15.
     An entry with `lane:ops` ships only when the caller passed
     `project="ops"` to chorus_init; otherwise it is skipped
     with `rule_fired="skipped:lane:<name>"` — the name is included so a
     free-text typo like `op_s` surfaces in the manifest
-    instead of silently dropping the lane's guards (F-K2 iii).
+    instead of silently dropping the lane's guards.
 
     Review 2026-09-15 nit: prior implementation iterated the tags set and
     returned the first `lane:` match; set iteration is nondeterministic
     (hash randomization), so an entry with two lane tags could flip
-    ownership on service restart — the same S1-shape bug this round
-    fixed for entry_agent. Fix: sort the tag set for a stable pick. Gate
+    ownership on service restart — the same set-order bug fixed for
+    entry_agent. Fix: sort the tag set for a stable pick. Gate
     on write side: entries should carry at most one `lane:` tag; the
     replay-test mirror + boot_render_size --gate enforce this
     invariant. Two `lane:` tags on one entry is a defect the audit
@@ -2360,8 +2358,8 @@ def _build_bootstrap_and_manifest(
     A manifest entry always exists for every bootstrap entry (including
     skipped ones); a bootstrap_entry exists only for entries that ship.
 
-    `project` selects the lane for lane-tagged entries (post-2026-09-15
-    flock-state-split, F13). Entries carrying `lane:<name>` ship only when
+    `project` selects the lane for lane-tagged entries (lanes date from
+    2026-09-15). Entries carrying `lane:<name>` ship only when
     project matches; otherwise they skip with `rule_fired="skipped:lane:<name>"`.
     Non-lane-tagged entries ignore the project parameter.
     """
@@ -2401,8 +2399,7 @@ def _build_bootstrap_and_manifest(
         stale_flag = _is_stale(review_after_str)
 
         # Ownership resolution — deterministic ID-prefix first, then explicit
-        # metadata, then (identity-only) sorted tag scan (review S1 fix,
-        # 2026-09-15). Type-gate widened from `identity` alone to include
+        # metadata, then (identity-only) sorted tag scan. Type-gate widened from `identity` alone to include
         # `state` so per-bird state entries participate in self/truncated/full.
         owner_meta = meta.get("owner", "") or ""
         entry_agent = None
@@ -2437,10 +2434,10 @@ def _build_bootstrap_and_manifest(
             manifest_entries.append(_manifest_row("skipped:retired", None))
             continue
 
-        # Skip: lane mismatch (F13/S3, 2026-09-15). Runs BEFORE the self/full
+        # Skip: lane mismatch. Runs BEFORE the self/full
         # decision so lane misses can't accidentally promote to `self` on an
         # owner-match. The skipped:lane row includes the expected project
-        # name so a free-text typo surfaces in the manifest (F-K2 iii).
+        # name so a free-text typo surfaces in the manifest.
         lane = _lane_tag(tags_set)
         if lane is not None and lane != (project or "").strip().lower():
             manifest_entries.append(_manifest_row(f"skipped:lane:{lane}", None))
@@ -2449,7 +2446,7 @@ def _build_bootstrap_and_manifest(
         content = doc
         truncated = False
         rule = "self" if (entry_agent is not None and entry_agent == agent) else "full"
-        # Truncation rule (review F2 2026-09-02 — confusion mode also truncates)
+        # Truncation rule (confusion mode also truncates)
         if (entry_agent is not None
                 and entry_agent != agent
                 and len(content) > OTHER_IDENTITY_TRUNCATE_CHARS):
@@ -2468,7 +2465,7 @@ def _build_bootstrap_and_manifest(
         }
         if truncated:
             entry["truncated"] = True
-            # F14 addendum + review R5 nit (2026-09-15): pointer names the
+            # The pointer names the
             # entry type dynamically (state entries point at state, not
             # identity) and includes `include_superseded=False` so a reader
             # following the pointer on a retired identity doesn't get the
@@ -2742,7 +2739,7 @@ async def chorus_init(
                 handoff_query["documents"],
                 handoff_query["metadatas"],
             ))
-            # F19 fix (review, 2026-09-15): filter superseded rows the same
+            # Filter superseded rows the same
             # way memory_search and the bootstrap loop do. Same class as
             # the 2026-08-16 finding #4 fix for bootstrap; that fix never
             # mirrored to handoffs, so a chain of same-lane handoffs
@@ -2801,7 +2798,7 @@ async def chorus_manifest(
     payload documents. Cheap-to-audit summary of what a bird would boot on:
     per-entry stored/read/shipped/meta sha256, rule fired, assembly constants,
     server commit, AMQ branch. Reliable even when the boot payload would
-    overflow the tool-result cap (R2, item 6 defect).
+    overflow the tool-result cap.
 
     Also returns the last N (=5) manifest hashes for this agent, from the
     on-disk manifest-hash history at BOOTSTRAP_HISTORY_PATH/manifest-hashes/
@@ -2815,8 +2812,8 @@ async def chorus_manifest(
 
     Args:
         agent: Your agent name. Empty for the confusion-mode manifest.
-        project: Lane selector for lane-tagged entries (post-2026-09-15
-                 flock-state-split, F13). Default `"general"`. Pass
+        project: Lane selector for lane-tagged entries (lanes date
+                 from 2026-09-15). Default `"general"`. Pass
                  a lane name (e.g. `"ops"`) to see that lane's manifest.
     """
     agent = agent.lower().strip() if agent else ""
@@ -2894,7 +2891,7 @@ async def amq_timeline(
 # round, 2026-09-04). Every `bootstrap_update` writes the pre-image to files
 # under BOOTSTRAP_HISTORY_PATH before upserting. Metadata-only writes
 # (memory_retract on bootstrap, canonical status/tags edits) also go through
-# this path per the review's R2 fix (b) so history covers rule-affecting
+# this path so history covers rule-affecting
 # changes, not only document changes.
 #
 # Files, not a chroma collection: the collection would either pollute
@@ -2905,17 +2902,17 @@ async def amq_timeline(
 #   BOOTSTRAP_HISTORY_PATH/<entry_id>/<version:04d>-<sha16>.md    (raw doc)
 #                                    <version:04d>-<sha16>.json   (sidecar)
 #
-# The sidecar carries the FULL sha256 (review R3 correction — sha16 in the
+# The sidecar carries the FULL sha256 (the sha16 in the
 # filename is for humans, reconstruction reads the sidecar's full value).
-# Writes are atomic per R2 hardening #1-#3: temp files in the same
+# Writes are atomic: temp files in the same
 # dir, fsync, rename both, fsync directory. Crash between rename and
 # fsync-dir leaves an orphan history record, never a gap.
 #
-# Version index is advisory (R2 hardening #3) — the authoritative order
+# Version index is advisory — the authoritative order
 # is the sha chain via `superseded_by_sha256` in the sidecar. Two racing
 # writes may pick the same integer; the chain still totally-orders them.
 # ---------------------------------------------------------------------------
-# Per-entry mutex for bootstrap_update + bootstrap_patch (CHORUS #6969420 S10).
+# Per-entry mutex for bootstrap_update + bootstrap_patch.
 # Serializes concurrent writers on the same entry_id across the check-then-write
 # window (the `embed` await at server.py:2317 straddles the lock read and upsert;
 # without this, two callers from the same pre-image both pass the sha check,
@@ -2939,7 +2936,7 @@ def _bootstrap_history_next_version(entry_id: str) -> int:
 
 
 def _bootstrap_landed_at_mark(md_path: str, landed_at_iso: str) -> None:
-    """Write `<md_path>.landed_at` after a successful upsert (CHORUS #6969420 S3).
+    """Write `<md_path>.landed_at` after a successful upsert.
 
     Best-effort: non-fatal on failure. The chain audit distinguishes:
       - LOST-UPDATE  (two records sharing a pre-image, marker present on first)
@@ -2970,11 +2967,10 @@ def _bootstrap_history_write(
     Returns (ok, error_message, record_info). record_info includes paths
     of the written files so callers can log them. Refuses if reason or
     author is empty — a history record without a stated reason is the same
-    information loss the mechanism exists to prevent (R2 Item 5
-    condition, extended to Item 1).
+    information loss the mechanism exists to prevent.
 
-    Optional (CHORUS #6969420 S11 — bootstrap_patch only):
-      patch_set: the patches as applied under §3.2 parallel semantics (not
+    Optional (bootstrap_patch only):
+      patch_set: the patches as applied under parallel semantics (not
         as caller submitted). Recorded in sidecar so an aborted patch write
         is replayable from disk (bootstrap_chain_audit.py intent-replay rule
         at b912e16 in the earlier repository).
@@ -3028,7 +3024,7 @@ def _bootstrap_history_write(
         md_tmp = None
         os.rename(json_tmp, json_path)
         json_tmp = None
-        # Match sqlite's mode (R2 hardening #5) — 644, readable by any
+        # Match sqlite's mode — 644, readable by any
         # uid so the flock's review-the-diff workflow works (a reviewer's
         # uid is not the service user). tempfile.mkstemp defaults to 600 and rename
         # preserves that; chmod after rename fixes it.
@@ -3151,7 +3147,7 @@ async def bootstrap_update(
     - Escape hatch: skip_history=True writes the entry with mandatory
       `reason` and marks metadata `history_skipped=True` so the manifest
       can surface it. Use only when history is not reachable and the
-      edit must land (R2 mitigation #2).
+      edit must land.
     - Every edit is diffed against the previous version. The regex scan
       counts guards/directives that disappear net of rewording (see
       `_compute_drift_summary`). A dedicated drift_flag memory is
@@ -3162,7 +3158,7 @@ async def bootstrap_update(
       what makes an independent cross-check possible.
 
     Args:
-        entry_id: The memory ID to update (e.g., 'mem-5a6bebdc9d5a1811').
+        entry_id: The memory ID to update (e.g., 'mem-0123456789abcdef').
         content: New full content for this entry.
         tags: Comma-separated tags (e.g., 'identity,bootstrap,<agent>').
         entry_type: Entry type (identity, directive, state, focus).
@@ -3177,7 +3173,7 @@ async def bootstrap_update(
                 skipped and metadata is marked history_skipped=True. Both
                 reason and author become required.
     """
-    # CHORUS #6969420 S10: per-entry mutex spans the entire check-then-write
+    # Per-entry mutex spans the entire check-then-write
     # sequence so the `embed` await below does not straddle the read + upsert.
     # Without this, two callers from the same pre-image both pass the sha check,
     # both write distinct history records, second upsert wins, first is told
@@ -3310,7 +3306,7 @@ async def _bootstrap_update_locked(
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
 
-    # --- CHORUS #6969420 S3: landed_at marker (upsert succeeded) ---
+    # --- landed_at marker (upsert succeeded) ---
     # Best-effort; non-fatal. Discriminates LOST-UPDATE (marker present on a
     # first-of-two-writers record) from LOST-UPDATE? (marker absent — cannot
     # separate lost update from an aborted call whose pre-image was later
@@ -3354,7 +3350,7 @@ async def _bootstrap_update_locked(
     # --- SAFEGUARD 2c: growth alarm — AMQ the coordinator on calcification
     # (operator's 2026-09-16 balloon-prevention ruling).
     # Calcification (>15% growth AND >6K abs, or fresh entry >6K) is a
-    # slow-boil signal that the flock-state-split round surfaced late —
+    # slow-boil signal that a boot-payload trim round surfaced late —
     # automating the alarm at write time catches balloons before they
     # force another crisis-driven round. Best-effort: notification failure
     # never fails the write. Recipients: _growth_alarm_recipients (coordinator, else the
@@ -3392,11 +3388,11 @@ async def _bootstrap_update_locked(
                 f"- Author: {author or 'unknown'}\n"
                 f"- Timestamp: {now}\n"
                 f"- Reason given: {reason or '(none)'}\n\n"
-                f"This is an automated notification per docs/matron/ROLE.md "
-                f"§3 Bootstrap discipline. Balloon-prevention rule: identity + "
+                f"This is an automated notification from the bootstrap drift "
+                f"check. Balloon-prevention rule: identity + "
                 f"directive entries should not accrete narrative in-place; "
                 f"receipts move to companion history files, canonical rules "
-                f"stay in the entry (FM-receipts-off-identity norm 2026-09-15). "
+                f"stay in the entry. "
                 f"Review the growth against last-cycle's baseline and route to "
                 f"a companion file if it's narrative accretion."
             )
@@ -3429,20 +3425,20 @@ async def _bootstrap_update_locked(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# bootstrap_patch — CHORUS #6969420 R2B
+# bootstrap_patch
 # Diff-input endpoint that eliminates the content-parameter retype shape from
 # bootstrap-entry edits.
 # ═══════════════════════════════════════════════════════════════════════════
 
-BOOTSTRAP_PATCH_CAP_BYTES = 8192  # §3.3 blast-radius bound
-BOOTSTRAP_PATCH_NET_DELETION_THRESHOLD = 200  # §5 A2 absolute chars
-BOOTSTRAP_PATCH_REVIEW_AFTER_TOKENS = ("review-after", "as-of")  # §5 line-match
+BOOTSTRAP_PATCH_CAP_BYTES = 8192  # blast-radius bound
+BOOTSTRAP_PATCH_NET_DELETION_THRESHOLD = 200  # net deletion, absolute chars
+BOOTSTRAP_PATCH_REVIEW_AFTER_TOKENS = ("review-after", "as-of")  # line-match
 
 
 def _bootstrap_patch_apply(
     pre_image: str, patches: list[dict]
 ) -> tuple[str | None, str, dict]:
-    """Apply patches to pre_image under §3.2 parallel non-overlapping semantics.
+    """Apply patches to pre_image under parallel non-overlapping semantics.
 
     Each patch: {"old_text": str, "new_text": str, "expect_matches"?: int,
                  "position"?: "end"}.
@@ -3464,24 +3460,24 @@ def _bootstrap_patch_apply(
         }
         if not isinstance(n["new_text"], str) or not isinstance(n["old_text"], str):
             return None, "invalid_patches", {}
-        # PR review B2: reject expect_matches < 1 (a patch that reports success
+        # Reject expect_matches < 1 (a patch that reports success
         # while changing nothing is the class this endpoint exists to remove).
         if not isinstance(n["expect_matches"], int) or n["expect_matches"] < 1:
             return None, "invalid_expect_matches", {
                 "expect_matches": n["expect_matches"]}
         normalized.append(n)
 
-    # §3.3: cap on sum(len(old_text) + len(new_text))
+    # Cap on sum(len(old_text) + len(new_text))
     total = sum(len(p["old_text"]) + len(p["new_text"]) for p in normalized)
     if total > BOOTSTRAP_PATCH_CAP_BYTES:
         return None, "payload_cap_exceeded", {"payload_bytes": total,
                                               "cap_bytes": BOOTSTRAP_PATCH_CAP_BYTES}
 
-    # §3.1: empty old_text rejects except with {position: "end"}
+    # Empty old_text rejects except with {position: "end"}
     for p in normalized:
         if p["old_text"] == "" and p["position"] != "end":
             return None, "empty_anchor", {}
-        # PR review B3: position=end with non-empty old_text is a caller mistake
+        # position=end with non-empty old_text is a caller mistake
         # — meaning "replace this" but getting an append with original in place.
         # Reject rather than silently append.
         if p["position"] == "end" and p["old_text"] != "":
@@ -3523,7 +3519,7 @@ def _bootstrap_patch_apply(
         for pos in positions:
             replacements.append((pos, pos + len(old), p["new_text"]))
 
-    # §3.2: parallel non-overlapping — sort ranges, detect overlap
+    # Parallel non-overlapping — sort ranges, detect overlap
     replacements.sort(key=lambda r: r[0])
     for i in range(1, len(replacements)):
         if replacements[i][0] < replacements[i - 1][1]:
@@ -3540,7 +3536,7 @@ def _bootstrap_patch_apply(
     for new_text in appends:
         post = post + new_text
 
-    # §5 A2: net_deletion — aggregate on images, not per-patch (PR review B5).
+    # net_deletion — aggregate on images, not per-patch.
     # 5 patches × 150 chars = 750 removed slips per-patch checks; aggregate
     # catches it. Simpler expression, nets appends against deletions correctly.
     # Empty new_text on any non-append patch stays as an additional per-patch
@@ -3555,7 +3551,7 @@ def _bootstrap_patch_apply(
                 net_deletion = True
                 break
 
-    # §5 review_after_touched: line-match on tokens, not threshold
+    # review_after_touched: line-match on tokens, not threshold
     review_after_touched = False
     for p in normalized:
         haystack = (p["old_text"] + "\n" + p["new_text"]).lower()
@@ -3567,7 +3563,7 @@ def _bootstrap_patch_apply(
         "patches_applied": len(normalized),
         "net_deletion": net_deletion,
         "review_after_touched": review_after_touched,
-        # normalized copy the server will record as applied (per §5 S11)
+        # normalized copy the server will record as applied
         "patches_as_applied": normalized,
     }
 
@@ -3589,8 +3585,8 @@ async def bootstrap_patch(
     Args:
         entry_id: The memory ID to patch. Rejects `not_found` on absent target.
         patches: List of {"old_text": str, "new_text": str, "expect_matches"?: int,
-                          "position"?: "end"}. Parallel non-overlapping semantics
-                 (§3.2). Empty `old_text` rejects except with `position="end"`.
+                          "position"?: "end"}. Parallel non-overlapping semantics.
+                 Empty `old_text` rejects except with `position="end"`.
         author: Required. Which bird performed the patch.
         reason: Required. Why. Extra-required when net_deletion or
                 review_after_touched trip.
@@ -3600,10 +3596,10 @@ async def bootstrap_patch(
         expected_after_sha256: Optional. If non-empty, server applies patches in
                 memory, hashes the post-image, rejects `after_sha_mismatch` if
                 it differs — BEFORE history write + upsert. MUST derive from a
-                staged, reviewed after-image (see §3.5 caller-side discipline).
+                staged, reviewed after-image (caller-side discipline).
         tags: Empty = carry over unchanged; caller-supplied value replaces.
     """
-    # Required-field validation (§2 — no soft defaults on a new endpoint)
+    # Required-field validation (no soft defaults on a new endpoint)
     if not author or not author.strip():
         return json.dumps({"status": "rejected", "reason_code": "missing_author",
                            "reason": "author is required", "id": entry_id})
@@ -3613,7 +3609,7 @@ async def bootstrap_patch(
     if not expected_stored_sha256:
         return json.dumps({"status": "rejected",
                            "reason_code": "missing_expected_sha",
-                           "reason": "expected_stored_sha256 is required (§3.4)",
+                           "reason": "expected_stored_sha256 is required",
                            "id": entry_id})
 
     async with _ENTRY_LOCKS.setdefault(entry_id, asyncio.Lock()):
@@ -3653,7 +3649,7 @@ async def _bootstrap_patch_locked(
                            "reason": "invariant entries cannot be modified",
                            "id": entry_id})
 
-    # --- Step 2: expected_stored_sha256 check on sha256(document) (§3.4) ---
+    # --- Step 2: expected_stored_sha256 check on sha256(document) ---
     # NOT on metadata field — 6 of 13 live entries have empty metadata sha.
     current_stored_sha256 = hashlib.sha256(old_content.encode()).hexdigest()
     if expected_stored_sha256 != current_stored_sha256:
@@ -3664,7 +3660,7 @@ async def _bootstrap_patch_locked(
             "current_stored_sha256": current_stored_sha256,
         })
 
-    # --- Step 3: apply patches in memory (§3.2 parallel non-overlapping) ---
+    # --- Step 3: apply patches in memory (parallel non-overlapping) ---
     post_image, reason_code, extra = _bootstrap_patch_apply(old_content, patches)
     if reason_code:
         return json.dumps({
@@ -3673,9 +3669,9 @@ async def _bootstrap_patch_locked(
             "id": entry_id, **extra,
         })
 
-    # §5 A2 + review_after_touched: BOTH trip friction gates demanding a non-
-    # empty reason (PR review B7: docstring promised both, code enforced only
-    # net_deletion — a promise the code did not keep). Directive 5 friction.
+    # net_deletion and review_after_touched BOTH trip friction gates demanding a
+    # non-empty reason (the docstring promised both; an earlier version enforced
+    # only net_deletion, a promise the code did not keep).
     if (extra["net_deletion"] or extra["review_after_touched"]) and (
             not reason or reason == "unknown"):
         gate = "net_deletion" if extra["net_deletion"] else "review_after_touched"
@@ -3685,7 +3681,7 @@ async def _bootstrap_patch_locked(
             "id": entry_id, "gate": gate,
         })
 
-    # --- Step 3b: expected_after_sha256 gate (§3.5, pre-write) ---
+    # --- Step 3b: expected_after_sha256 gate (pre-write) ---
     computed_after_sha256 = hashlib.sha256(post_image.encode()).hexdigest()
     if expected_after_sha256:
         if expected_after_sha256 != computed_after_sha256:
@@ -3699,7 +3695,7 @@ async def _bootstrap_patch_locked(
     # --- Drift summary (informational at patch scale, still runs) ---
     drift = _compute_drift_summary(old_content, post_image)
 
-    # --- Step 4: history write (with patch_set + expected_after_sha256, S11) ---
+    # --- Step 4: history write (with patch_set + expected_after_sha256) ---
     ok, err, history_info = _bootstrap_history_write(
         entry_id=entry_id,
         old_content=old_content,
@@ -3719,7 +3715,7 @@ async def _bootstrap_patch_locked(
         })
 
     # --- Build metadata for upsert ---
-    # PR review B1: metadata CARRIES OVER from pre-image, then update only what
+    # Metadata CARRIES OVER from pre-image, then update only what
     # this write changes. Building a fresh dict silently un-retires retired birds
     # (status=retired dropped), unlinks superseded pointers, etc. — the retype
     # shape relocated from document body to metadata dict. `bootstrap_update`'s
@@ -3761,7 +3757,7 @@ async def _bootstrap_patch_locked(
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e), "id": entry_id})
 
-    # --- S3: landed_at marker (upsert succeeded) ---
+    # --- landed_at marker (upsert succeeded) ---
     if history_info and history_info.get("md_path"):
         _bootstrap_landed_at_mark(history_info["md_path"], now)
 
@@ -3795,8 +3791,8 @@ async def _bootstrap_patch_locked(
         except Exception as e:
             print(f"[persMEM] WARNING: drift_flag storage failed: {e}")
 
-    # --- Server-computed stored_diff, both sides from re-read stored content (A1) ---
-    # PR review B4: on re-read failure or empty result, omit stored_diff entirely
+    # --- Server-computed stored_diff, both sides from re-read stored content ---
+    # On re-read failure or empty result, omit stored_diff entirely
     # and return stored_diff_source="unavailable". A silent fallback to
     # post_image (caller-derived) is shape-identical and defeats A1's whole
     # value — a reviewer cannot tell they are reading a diff against caller

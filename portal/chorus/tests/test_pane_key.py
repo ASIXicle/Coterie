@@ -94,8 +94,8 @@ assert c.check_pane_key_auth(None) is False, "non-string header rejects"
 c.PANE_KEY_TOKEN = b""
 print("T10 auth: empty-stored / wrong-scheme / empty-token / wrong-value reject; matching accepts")
 
-# T11 proxy fence — is_proxied_request detects Caddy's X-Forwarded-{For,Proto,Host} on stub
-# dicts AND on a real HTTPMessage (case-insensitive lookup — review R3 caught that a plain
+# Proxy fence — is_proxied_request detects Caddy's X-Forwarded-{For,Proto,Host} on stub
+# dicts AND on a real HTTPMessage (case-insensitive lookup — a review caught that a plain
 # dict test alone would miss the property the handler actually relies on).
 import http.client, io
 assert c.is_proxied_request({}) is False

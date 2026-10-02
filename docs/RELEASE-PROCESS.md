@@ -39,7 +39,10 @@ fails (a dead rule means the code moved and the map did not), and the output is 
 before it is committed, so a rename that breaks code fails the build rather than the reader.
 **Third-party files cross as vendored entries** that carry an owner, the upstream URL and a
 sha256 the build verifies; the lint scans them for site-fact shapes only, since a minified
-library cannot be reworded, and the owner answers for every hit that exemption allows.
+library cannot be reworded, and the owner answers for every hit that exemption allows. A file
+that a third-party tool generated from our own sources (a stylesheet built from our templates)
+is not third-party: we can reword it, so it crosses as `copy` under every rule. Nothing of ours
+is ever appended to a vendored file. v0.1.0 shipped one of our comments that way.
 
 **Never merge, cherry-pick or rebase from `main` into any public-facing ref.** One merge
 carries every private path, name and message across. A change on `main` that the public

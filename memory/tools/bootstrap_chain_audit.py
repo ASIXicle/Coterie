@@ -18,7 +18,7 @@ another record in the same entry shares its pre-image content_sha256:
                   marker is for: it separates "returned success" from "died", which the chain alone cannot.
 A record whose superseded_by matches the live document is LANDED even if the sidecar has no landed_at
 (the marker is written after upsert returns; a cancellation in that window loses the marker, not the write).
-Intent replay (review S11, 2026-09-09): when a sidecar carries `patches` ([{old_text,new_text}], as applied)
+Intent replay (2026-09-09): when a sidecar carries `patches` ([{old_text,new_text}], as applied)
 (deployed sidecar key `patch_set`; `patches` also honoured) the audit re-applies them to the recorded before-image (the .md) and checks the result hashes to
 sidecar.superseded_by_sha256 and, if present, to sidecar.expected_after_sha256 (the caller's claim). All three
 from disk, nothing typed at audit time. INTENT-MISMATCH = the server's record of what it applied does not
@@ -42,7 +42,7 @@ defects=[]; aborted=[]; landed_marked = set()
 lost=[]
 cov={'records':0,'intent_evaluated':0,'no_patch_set':0,'landed_at_present':0,'landed_at_absent':0}
 # Every entry's history dir, not just mem-*: state-<agent> and lane-tagged identity rows arrived with
-# the 2026-09-15 flock-state-split and went unaudited until 2026-09-24.
+# the 2026-09-15 state split and went unaudited until 2026-09-24.
 for d in sorted(x for x in glob.glob(os.path.join(H,'*')) if os.path.isdir(x) and os.path.basename(x) != 'manifest-hashes'):
     eid=os.path.basename(d); recs=[]
     for j in sorted(glob.glob(d+'/*.json')):
@@ -55,7 +55,7 @@ for d in sorted(x for x in glob.glob(os.path.join(H,'*')) if os.path.isdir(x) an
     for _,s0,_ in recs: pre_count[s0['content_sha256']]=pre_count.get(s0['content_sha256'],0)+1
     landed_shas={s0['content_sha256'] for _,s0,_ in recs} | ({live_sha} if live_sha else set())
     for i,(base,s,docsha) in enumerate(recs):
-        # landed_at: the deployed server writes it as a sibling file `<base>.md.landed_at` (S3 marker); a sidecar
+        # landed_at: the deployed server writes it as a sibling file `<base>.md.landed_at`; a sidecar
         # field of the same name is also honoured. Marker on record N means the write that superseded N returned.
         if not s.get("landed_at"):
             mk=os.path.join(d,base+'.md.landed_at')

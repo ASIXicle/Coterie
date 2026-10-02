@@ -57,7 +57,7 @@ Rules the layout follows:
 | `dashboard` | system, `nologin` | `/var/lib/dashboard` | `amq-poll`, `amq-read` | `dashboard.service`: lists and reads mail through the groups; everything else (memories, boot history, sending as the operator) through the memory server's `/dashboard/*` API with its own scoped secret — it never opens the vector store or the history directory |
 | `newstron` | system, `nologin`, no home (`/nonexistent`) | — (state in `/var/lib/newstron`) | — | the four `newstron-*` timers, `pip-audit-scan` |
 | `forge` | system, `nologin` | `/var/lib/forge` | — | `forge.service` (the bundled git server; only where it is installed). It owns the init-prompts repository and its hooks; no agent account reaches its files |
-| `root` | — | — | — | `hook-detect`, `drift-detect`, everything under `/opt`, Caddy, sudoers |
+| `root` | — | — | — | `hook-detect`, `drift-detect` (a later release), everything under `/opt`, Caddy, sudoers |
 | group `agents` | — | — | — | what agents deliberately share (a toolchain venv, the init-prompts remote if it lives on this host; nothing else by default) |
 | groups `amq-poll`, `amq-read` | — | — | — | rule 3; no login user is ever added to either |
 
@@ -84,7 +84,7 @@ Rules the layout follows:
 | `/etc/caddy/Caddyfile`, `/etc/caddy/snippets.portal` | `root:caddy 0640` | the site block (rendered by `install-fresh.sh`, or hand-written by INSTALL §4; holds `<SITE_HOSTNAME>`, the allowlist and the portal password's bcrypt hash), the generated snippet |
 | `/etc/coterie/portal.password`, `/etc/coterie/portal.hash` | `root:root 0600` (directory `0755`) | the portal's password, made once by `install-fresh.sh` (`sudo cat` it to read it again), and its bcrypt hash, made from standard input; the Caddyfile carries only the hash. Delete both and rerun to change the password |
 | `/etc/caddy/Caddyfile.pre-portal`, `/var/log/caddy/portal.log`, `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt` | Caddy's | the pre-install backup stage 2 keeps, the site's access log, the internal CA's root (imported once into each browser) |
-| `/etc/systemd/system/` | `root:root` | every unit (`memory`, `chorusd`, `dashboard`, `ttyd-<agent>`, `hook-detect`, `drift-detect`, `pip-audit-scan`, `newstron-*`, `amq-hygiene`), installed from `build/` (rendered) or `<component>/systemd/` (fixed) |
+| `/etc/systemd/system/` | `root:root` | every unit (`memory`, `chorusd`, `dashboard`, `ttyd-<agent>`, `hook-detect`, `drift-detect` (a later release), `pip-audit-scan`, `newstron-*`, `amq-hygiene`), installed from `build/` (rendered) or `<component>/systemd/` (fixed) |
 | `/etc/tmux.conf` | `root:root 0644` | rendered (`build/tmux.conf`): behaviour lines the paste bridge depends on + the status-bar theme |
 | `/etc/systemd/system/ttyd-<agent>.service` | `root:root 0644` | generated, one per enabled agent |
 | `/run/coterie-panes`, `/run/coterie-panes/<agent>/` | parent `root:root 0755`; each agent's `<agent>:caddy 2750` (`PANE_PROXY_GROUP`) | made by the `ttyd-<agent>` unit's root steps (`install -d`, owner, group and setgid mode set together, before every start; not `RuntimeDirectory=`, which systemd re-applies before each command and so undid the group). The stale socket is removed before each start; nothing removes it at stop. Holds `pane.sock` (`srw-rw----`, the same owner and group), the pane's only listener |
@@ -92,8 +92,8 @@ Rules the layout follows:
 | `/etc/dashboard.env` | `root:dashboard 0640` | the dashboard's variables and `DASHBOARD_SECRET` (scoped to `/dashboard/*`; **never `MEMORY_SECRET_PATH`**) |
 | `/etc/dashboard/post.token` | `root:dashboard 0640` | the write token every dashboard POST must carry |
 | `/opt/shield/` | `root:root` | Hook & Shield code (its own small memory client; it imports nothing from `/opt/newstron`), `hook_baselines.yaml` (yours), `hook_baselines.example.yaml`. Runs on `/usr/bin/python3` with `python3-yaml` from apt |
-| `/etc/shield/{hook-detect,drift-detect}.env` | `root:root 0600` | the memory endpoint + secret the timers alert through |
-| `/var/log/hook-detect/`, `/var/log/drift-detect/` | `root:root 0750` | timer logs |
+| `/etc/shield/{hook-detect,drift-detect}.env` (`drift-detect`: a later release) | `root:root 0600` | the memory endpoint + secret the timers alert through |
+| `/var/log/hook-detect/`, `/var/log/drift-detect/` (a later release) | `root:root 0750` | timer logs |
 | `/opt/newstron/{*.py,venv/}` | `root:root` | feed fetcher, digest, purger and their venv — installed by root, read by `newstron` |
 | `/etc/newstron/newstron.env` | `root:newstron 0640` | memory endpoint + the news secret |
 | `/etc/newstron/feeds.yaml` | `root:newstron 0640` | the feed list (config, not code: it does not live under `/opt`) |
@@ -123,7 +123,7 @@ Rules the layout follows:
 | `dashboard.service` (`After=memory.service`) | `dashboard` | `/etc/dashboard.env` | `/opt/memory/venv/bin/python3 /opt/dashboard/dashboard.py` |
 | `forge.service` | `forge` | — (its secrets are in `/etc/forge/app.ini`, `root:forge 0640`) | `/opt/forge/forgejo --config /etc/forge/app.ini --work-path /var/lib/forge web` (only where the bundled forge is installed) |
 | `hook-detect.timer` + `.service` | `root` | `/etc/shield/hook-detect.env` | `/usr/bin/python3 /opt/shield/hook-detect.py` (weekly) |
-| `drift-detect.timer` + `.service` | `root` | `/etc/shield/drift-detect.env` | `/usr/bin/python3 /opt/shield/drift-detect.py` (daily): every LIVE path in `verify-mirror.pairs` against its SOURCE in `/opt/coterie`; a deployed file edited in place is the drift it exists to catch |
+| `drift-detect.timer` + `.service` (**not in this release**: its code and units ship later; the names are reserved here) | `root` | `/etc/shield/drift-detect.env` | `/usr/bin/python3 /opt/shield/drift-detect.py` (daily): every LIVE path in `verify-mirror.pairs` against its SOURCE in `/opt/coterie`; a deployed file edited in place is the drift it exists to catch |
 | `pip-audit-scan.timer` + `.service` | `newstron` | `/etc/newstron/newstron.env` | `/opt/newstron/venv/bin/python3 /opt/newstron/pip-audit-scan.py` (weekly; the venvs it audits are root-owned, rule 1) |
 | `newstron-fetch`, `newstron-security`, `newstron-digest`, `newstron-purger` (`.timer` + `.service`) | `newstron` | `/etc/newstron/newstron.env` | `/opt/newstron/venv/bin/python3 /opt/newstron/<script>.py`; the digest posts to the memory server, it does not touch a Maildir |
 | `amq-hygiene.timer` + `.service` | `memory` | — | weekly: mail older than 30 days moves from `new/` to `cur/`; nothing is deleted |
@@ -175,7 +175,7 @@ not own it).
 Hook & Shield: `SHIELD_BASELINES_FILE` → `/opt/shield/hook_baselines.yaml` · `SHIELD_LOG_DIR`
 → `/var/log/hook-detect` · `SHIELD_LOOPBACK_PORTS` → `8765 8766 8767` (the listeners a hook may
 legitimately call) · `SHIELD_VENVS` → `/opt/memory/venv /opt/newstron/venv` ·
-`DRIFT_PAIRS` → `/opt/coterie/tools/verify-mirror.pairs` · `DRIFT_SOURCE_ROOT` → `/opt/coterie` ·
+drift-detect (a later release): `DRIFT_PAIRS` → `/opt/coterie/tools/verify-mirror.pairs` · `DRIFT_SOURCE_ROOT` → `/opt/coterie` ·
 `DRIFT_LOG_DIR` → `/var/log/drift-detect` · `MEMORY_URL` + `NEWSTRON_SECRET` in the env file:
 where alerts go.
 

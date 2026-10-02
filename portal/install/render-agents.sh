@@ -216,7 +216,7 @@ for name in $names; do
 done
 
 # --- tmux config (behaviour carried forward verbatim + the generated theme) ------
-# READ FIRST, RESTORED AS FOUND (Directive Five corollary): the behaviour block below is the
+# READ FIRST, RESTORED AS FOUND: the behaviour block below is the
 # hand-written /etc/tmux.conf this generator replaces, reproduced line for line. The portal's
 # paste bridge depends on the three clipboard lines -- dropping them silently breaks copy and
 # paste in every pane. deploy.sh refuses to install a tmux.conf that drops a live setting.

@@ -4,8 +4,7 @@
 //   node dashboard/tests/md_sink.test.js <memory.js>  (any other copy, e.g. a git show)
 //
 // A review finding (2026-09-25): mdToHtml escapes & < > and not quotes, and its output reaches
-// innerHTML through the MD component. Traced 2026-10-01 (dashboard/optimizations/
-// 2026-10-01-dashboard-client/PLAN.md §2.3): the converter never emits an attribute, so a quote has
+// innerHTML through the MD component. Traced 2026-10-01: the converter never emits an attribute, so a quote has
 // no attribute context to break out of, and every byte of text is escaped before a tag is inserted.
 // That is true by construction today and nothing enforced it, so this test does: every tag the
 // converter emits for hostile inputs must be on the allow-list, none may carry an attribute, and

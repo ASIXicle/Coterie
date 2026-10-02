@@ -567,7 +567,7 @@
       ),
       // Activity is primary now: it is the audit-trail view and it had the least room.
       activityCard(days),
-      // Receipts: the four claims COMPARISON.md makes against the field, each read
+      // Receipts: four claims the project makes, each read
       // from the file that records it. Boots (manifest hashes), rings (the
       // orchestrator's ledger), edits (pre-image sidecars), hooks (the scanner's log).
       h('div', { className: 'flex items-baseline gap-3', style: { marginTop: '4px' } },
@@ -782,7 +782,7 @@
   // Drift is the column that earns this card: a hash is a fact, a hash that changed
   // is a question, and the answer is whether an edit was recorded between the two
   // boots. Changed-after-an-edit is the system working; changed-with-no-edit is the
-  // signal COMPARISON.md promises to surface.
+  // signal this card exists to surface.
   function bootsCard(boots) {
     const rows = boots || [];
     const when = function (iso) { return iso ? relTime(iso) : ''; };

@@ -942,7 +942,7 @@ class Handler(BaseHTTPRequestHandler):
         # in normal use, so a proxied POST reaching them is off-host and unauthorized.
         # `/fire`, `/doorbell`, `/abort`, `/status` STAY proxy-reachable — those are the
         # four routes the portal page consumes by design (grep of portal/index.html).
-        # review R3 2026-09-16: this was the "cheaper route" the pane-key hunt-list flagged;
+        # 2026-09-16: without this gate, a
         # LAN attacker could POST /chorus/matron to type into any bird's pane or POST
         # /chorus/hook to mark any bird busy for up to 30 min, all without auth.
         if (p.endswith("hook") or p.endswith("matron")) and is_proxied_request(self.headers):
@@ -1010,7 +1010,7 @@ class Handler(BaseHTTPRequestHandler):
             # this endpoint LAN-reachable via https://<SITE_HOSTNAME>/chorus/pane-key. Caddy adds
             # X-Forwarded-* on every proxied request; a direct loopback caller never sets them.
             # Any request that arrived through the proxy fails closed here, BEFORE the token
-            # compare and before any state or ledger write (review R2 #1, 2026-09-16).
+            # compare and before any state or ledger write.
             # Belt-and-suspenders: the front door should also block /chorus/pane-key + /chorus/matron
             # at the Caddyfile level so the request never leaves the host at all.
             if is_proxied_request(self.headers):
@@ -1018,7 +1018,7 @@ class Handler(BaseHTTPRequestHandler):
                 print(f"[pane-key] rejected proxied request; X-Forwarded-*={fwd!r}", flush=True)
                 return self._json(403, {"error": "pane-key is loopback-only; not served through the proxy"})
             # Auth check — Bearer token in Authorization header, constant-time compare.
-            # Auth rejects go to the journal, NOT the ledger (review R2 #2, 2026-09-16):
+            # Auth rejects go to the journal, NOT the ledger:
             # an unauthenticated caller must not be able to grow doorbell.log arbitrarily.
             if not check_pane_key_auth(self.headers.get("Authorization", "")):
                 b_probe = body.get("bird") if isinstance(body.get("bird"), str) else "?"

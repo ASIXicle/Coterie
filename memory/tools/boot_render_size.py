@@ -119,7 +119,7 @@ def overlay_model(ents, model_dir):
     print(f"[model] overlaid {len(loaded)} entries: {' '.join(loaded)}", file=sys.stderr)
     return ents
 
-def assemble(agent, ents, known, state_rule, shared_id="mem-57e9659a70ab58c7",
+def assemble(agent, ents, known, state_rule, shared_id=None,
              project="general", para_max=500):
     boot, man, gate_fail = [], [], []
     today = datetime.now(timezone.utc).date()
@@ -128,7 +128,7 @@ def assemble(agent, ents, known, state_rule, shared_id="mem-57e9659a70ab58c7",
         status = m.get("status"); typ = m.get("type", "") or ""
         tags_str = m.get("tags", "") or ""
         tags = {t.strip().lower() for t in tags_str.split(",")}
-        # Lane rule (spec F13): an entry tagged lane:<name> ships only when the
+        # Lane rule: an entry tagged lane:<name> ships only when the
         # caller's `project` is that lane; otherwise skipped:lane. Modelled only
         # under --state-rule (it is part of the same proposed server change).
         lanes = {t[5:] for t in tags if t.startswith("lane:")}
@@ -141,7 +141,7 @@ def assemble(agent, ents, known, state_rule, shared_id="mem-57e9659a70ab58c7",
         if typ == "identity" or (state_rule and typ == "state"):
             entry_agent = next((a for a in sorted(known) if a in tags), None)
         if state_rule and eid == shared_id and entry_agent is not None:
-            # Tag-keyed fragility (chorus-init README, payload-budget log): a bird
+            # Tag-keyed fragility: a bird
             # name in the SHARED state entry's tags would truncate the roster for
             # every other bird. Same class as an identity losing its name tag.
             gate_fail.append(f"{eid}: shared state entry resolves to bird {entry_agent!r} "
@@ -207,15 +207,16 @@ def main():
     ap.add_argument("--chars-per-token", type=float, default=4.0)
     ap.add_argument("--margin", type=float, default=0.20, help="fraction of cap kept free (default 0.20)")
     ap.add_argument("--margin-for", action="append", default=[], metavar="BIRD=FRACTION",
-                    help="per-bird margin override for this --project run, e.g. alpha=0.14 (spec F20 option c: "
+                    help="per-bird margin override for this --project run, e.g. alpha=0.14 ("
                          "a named, smaller margin on one bird's lane; handoffs are already in the render, "
                          "so a 'handoff reserve' would double-count)")
     ap.add_argument("--amq-reserve", type=int, default=4300, metavar="CHARS",
                     help="chars added to every render for the AMQ section this tool cannot read "
                          "(default 4300: the 2026-09-15 live calibration, empty inbox); 0 to disable")
     ap.add_argument("--gate", action="store_true", help="exit 1 on any FAIL")
-    ap.add_argument("--shared-id", default="mem-57e9659a70ab58c7",
-                    help="the shared state entry; with --state-rule the gate fails if its tags resolve to a bird")
+    ap.add_argument("--shared-id", default=None, metavar="MEM_ID",
+                    help="this site's shared state entry (the one no agent owns); required with --state-rule, "
+                         "whose gate fails if that entry's tags resolve to a bird")
     ap.add_argument("--para-max", type=int, default=500,
                     help="spec cap on a state entry's first paragraph (default 500; the server's own cut is 700)")
     ap.add_argument("--handoff-skip-superseded", action="store_true",
@@ -225,6 +226,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--dump", metavar="DIR", help="write each bird's rendered JSON to DIR/<bird>.json (diff against a real boot)")
     a = ap.parse_args()
+    if a.state_rule and not a.shared_id:
+        ap.error("--state-rule needs --shared-id: the id of this site's shared state entry")
     if a.dump: os.makedirs(a.dump, exist_ok=True)
 
     roster_path, order, known = load_roster()
