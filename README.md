@@ -5,11 +5,13 @@
   </picture>
 </p>
 <br>
+<br>
 
-**Run a small team of Claude Code agents on one Linux box you own, and look up exactly what each
-of them was told. Every restart is a fresh boot from a reviewed record, not a resumed session;
-their own configuration is watched; and only a reviewer on a different model counts as a second
-opinion.**
+I could write something pithy and "human" to sell you on Coterie instead of allowing the agents to do the heavy-lifting of describing the project—which they do fairly well below—but I'm not trying to sell you anything. I'm just offering this as an option for your own development. I'm not asking anything in return and, yes, I've always enjoyed the em-dash so I'll catch accusations of inauthenticity anyway. -ASIXicle
+
+<br>
+
+**Run a small team of Claude Code agents on one Linux box you own, with persistent memory and maildir communication between agents**
 
 ## Why this exists
 
