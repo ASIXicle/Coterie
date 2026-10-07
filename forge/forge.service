@@ -20,6 +20,30 @@ ReadWritePaths=/var/lib/forge
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
+# Added for v0.1.3, after the first install walk passed on the lines above (reviewer's list, 2026-10-01).
+# The server is one Go binary serving HTTP on loopback and running git as its own account: it needs
+# no capability, no address family but these, no namespace, no personality or realtime change.
+# systemd-analyze security --offline=true forge.service: 7.7 EXPOSED with the lines above, see the
+# release record for the figure with these. Each of these lines is exercised on a fresh host.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,10 +79,12 @@ def scan_venv(venv_path: str) -> "list[dict] | None":
 
     logging.info(f"scanning {venv_path}")
 
-    # Step 1: freeze target venv's packages to a temp requirements file
+    # Step 1: freeze target venv's packages to a temp requirements file. --all keeps pip,
+    # setuptools and wheel in the list; plain freeze drops them, so pip's own advisories were
+    # never scanned (2026-10-04: pip 25.1.1 in three venvs, 6 advisories, seen only by hand).
     try:
         freeze_result = subprocess.run(
-            [str(python), "-m", "pip", "freeze"],
+            [str(python), "-m", "pip", "freeze", "--all"],
             capture_output=True, text=True, timeout=60,
         )
         if freeze_result.returncode != 0:
@@ -96,19 +99,32 @@ def scan_venv(venv_path: str) -> "list[dict] | None":
         return []  # a real, empty venv: scanned, nothing to find
 
     # Step 2: write freeze output to temp file, scan with OUR pip-audit.
-    # pip-audit resolves the file against PyPI, which has no local-label builds such as
-    # torch==2.11.0+cpu (PyTorch's CPU index only). One such line fails the whole venv's scan
-    # (the memory server's venv installs torch from that index). Advisories are filed against the
-    # upstream version, so the label is dropped for the audit and logged.
-    lines, relabelled = [], []
+    # pip-audit looks each pin up on PyPI, which has no local-label builds such as
+    # torch==2.11.0+cpu (PyTorch's CPU index only; the memory server's venv installs torch from
+    # it). Such a pin comes back skipped, unaudited (before --disable-pip it failed the whole
+    # venv's scan). Advisories are filed against the upstream version, so the label is dropped
+    # for the audit and logged.
+    # Anything that is not a name==version pin (an editable or VCS install, a URL or a local path)
+    # is not a PyPI release, so no advisory covers it, and resolving it means fetching its source:
+    # an editable install from a private forge failed the whole venv's scan for lack of
+    # credentials (2026-10-04). Its dependencies are pinned lines of their own and are audited.
+    lines, relabelled, skipped = [], [], []
     for line in freeze_result.stdout.splitlines():
-        m = re.match(r"^([A-Za-z0-9_.\-\[\]]+)==([^+\s]+)\+\S+$", line.strip())
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not re.match(r"^[A-Za-z0-9_.\-\[\]]+==\S+$", line):
+            skipped.append(line)
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-\[\]]+)==([^+\s]+)\+\S+$", line)
         if m:
-            relabelled.append(line.strip())
+            relabelled.append(line)
             line = f"{m.group(1)}=={m.group(2)}"
         lines.append(line)
     if relabelled:
         logging.info(f"{venv_path}: audited at the upstream version (local label dropped): {', '.join(relabelled)}")
+    if skipped:
+        logging.info(f"{venv_path}: not audited (not a PyPI release): {', '.join(skipped)}")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
         tmp.write("\n".join(lines) + "\n")
         tmp_path = tmp.name
@@ -121,8 +137,14 @@ def scan_venv(venv_path: str) -> "list[dict] | None":
     # is no terminal, which is why the timer's runs were fine and the defect stayed latent.
     json_fd, json_path = tempfile.mkstemp(suffix=".json")
     os.close(json_fd)
-    cmd = base + ["--requirement", tmp_path, "--format=json", "--progress-spinner", "off",
-                  "--output", json_path]
+    # pip-audit's cache lives under HOME by default; the scanner's user may have none (/nonexistent),
+    # and every scan then failed with PermissionError before printing anything. A scratch cache per run.
+    cache_dir = tempfile.mkdtemp(prefix="pip-audit-cache-")
+    # --no-deps --disable-pip: the freeze is already the venv's complete, pinned set, so look each
+    # pin up as it is. Otherwise pip-audit runs `pip install --dry-run` on the list in a scratch
+    # venv, fetching every package (--no-deps alone still does; it only skips resolution).
+    cmd = base + ["--requirement", tmp_path, "--no-deps", "--disable-pip", "--format=json",
+                  "--progress-spinner", "off", "--output", json_path, "--cache-dir", cache_dir]
 
     try:
         result = subprocess.run(
@@ -143,6 +165,7 @@ def scan_venv(venv_path: str) -> "list[dict] | None":
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
     # pip-audit returns exit code 1 when vulnerabilities found
     if result.returncode not in (0, 1):
@@ -163,6 +186,9 @@ def scan_venv(venv_path: str) -> "list[dict] | None":
     # pip-audit JSON format: {"dependencies": [{"name": ..., "version": ...,
     #   "vulns": [{"id": "CVE-...", "fix_versions": [...], "description": ...}]}]}
     findings = []
+    unaudited = [d["skip_reason"] for d in data.get("dependencies", []) if d.get("skip_reason")]
+    if unaudited:  # e.g. a pin PyPI doesn't have; named here so a skip is never read as clean
+        logging.warning(f"{venv_path}: pip-audit could not audit {len(unaudited)}: {'; '.join(unaudited)}")
     for dep in data.get("dependencies", []):
         for vuln in dep.get("vulns", []):
             findings.append({

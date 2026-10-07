@@ -56,6 +56,7 @@ Rules the layout follows:
 | `<orchestrator>` (name from `agents.json`) | system, `nologin`, no home | — | `amq-poll` **only** | `chorusd.service` |
 | `dashboard` | system, `nologin` | `/var/lib/dashboard` | `amq-poll`, `amq-read` | `dashboard.service`: lists and reads mail through the groups; everything else (memories, boot history, sending as the operator) through the memory server's `/dashboard/*` API with its own scoped secret — it never opens the vector store or the history directory |
 | `newstron` | system, `nologin`, no home (`/nonexistent`) | — (state in `/var/lib/newstron`) | — | the four `newstron-*` timers, `pip-audit-scan` |
+| `memory-venv`, `newstron-venv` | system, `nologin`, no home (`/nonexistent`) | — | — | only where INSTALL §7's venv patching is installed: each owns one venv (`/opt/memory/venv`, `/opt/newstron/venv`), and nothing runs as it except that tool's rehearsal and apply. One owner per venv, never shared |
 | `forge` | system, `nologin` | `/var/lib/forge` | — | `forge.service` (the bundled git server; only where it is installed). It owns the init-prompts repository and its hooks; no agent account reaches its files |
 | `root` | — | — | — | `hook-detect`, `drift-detect` (a later release), everything under `/opt`, Caddy, sudoers |
 | group `agents` | — | — | — | what agents deliberately share (a toolchain venv, the init-prompts remote if it lives on this host; nothing else by default) |
@@ -67,6 +68,7 @@ Rules the layout follows:
 |---|---|---|
 | `/etc/coterie/agents.json` | `root:root 0644` | the roster (rule 2) |
 | `/opt/memory/{server.py,scripts/,tools/,venv/,models/,VERSION}` | `root:root` (dirs `0755`) | memory server code, its script (`amq-hygiene.sh`: what its timer runs; the news purge is the fetcher's `purger`, through the news API, never a second writer on the vector store) and tools (the doorbell verifier and stats), venv, the pinned embedding model — installed by root, read by `memory`. `VERSION` is written by INSTALL from the release tag; the server reports it as `server_commit` (a tree without `.git` is the normal public case, not a regression) |
+| `/opt/memory/venv/`, `/opt/newstron/venv/` with venv patching (INSTALL §7) | `memory-venv`, `newstron-venv` (modes as installed; nothing group- or world-writable) | each venv's own owner, so the weekly patching never runs a venv interpreter as root; the services still only read them |
 | `/etc/memory.env` | `root:root 0600` | `MEMORY_*` variables incl. the secret path segment |
 | `/var/lib/memory/chromadb/` | `memory:memory 0700` | vector store |
 | `/var/lib/memory/bootstrap-history/` | `memory:memory 0700` | boot manifests, `manifest-hashes/<agent>.log`, patch pre-images |
@@ -92,6 +94,8 @@ Rules the layout follows:
 | `/etc/dashboard.env` | `root:dashboard 0640` | the dashboard's variables and `DASHBOARD_SECRET` (scoped to `/dashboard/*`; **never `MEMORY_SECRET_PATH`**) |
 | `/etc/dashboard/post.token` | `root:dashboard 0640` | the write token every dashboard POST must carry |
 | `/opt/shield/` | `root:root` | Hook & Shield code (its own small memory client; it imports nothing from `/opt/newstron`), `hook_baselines.yaml` (yours), `hook_baselines.example.yaml`. Runs on `/usr/bin/python3` with `python3-yaml` from apt |
+| `/etc/venv-autopatch.toml` | `root:root 0644` | which venvs the weekly patching covers, their owners, tests and units (from `hookandshield/venv-autopatch.example.toml`) |
+| `/var/lib/venv-autopatch/` | `root:root 0711` | its ledger per venv (what it installed, what failed here), the last report, and the rehearsal's scratch copies |
 | `/etc/shield/{hook-detect,drift-detect}.env` (`drift-detect`: a later release) | `root:root 0600` | the memory endpoint + secret the timers alert through |
 | `/var/log/hook-detect/`, `/var/log/drift-detect/` (a later release) | `root:root 0750` | timer logs |
 | `/opt/newstron/{*.py,venv/}` | `root:root` | feed fetcher, digest, purger and their venv — installed by root, read by `newstron` |
@@ -125,6 +129,7 @@ Rules the layout follows:
 | `hook-detect.timer` + `.service` | `root` | `/etc/shield/hook-detect.env` | `/usr/bin/python3 /opt/shield/hook-detect.py` (weekly) |
 | `drift-detect.timer` + `.service` (**not in this release**: its code and units ship later; the names are reserved here) | `root` | `/etc/shield/drift-detect.env` | `/usr/bin/python3 /opt/shield/drift-detect.py` (daily): every LIVE path in `verify-mirror.pairs` against its SOURCE in `/opt/coterie`; a deployed file edited in place is the drift it exists to catch |
 | `pip-audit-scan.timer` + `.service` | `newstron` | `/etc/newstron/newstron.env` | `/opt/newstron/venv/bin/python3 /opt/newstron/pip-audit-scan.py` (weekly; the venvs it audits are root-owned, rule 1) |
+| `venv-autopatch.timer` + `.service` (INSTALL §7) | `root` | — | `/usr/bin/python3 -I /opt/shield/venv-autopatch.py --config /etc/venv-autopatch.toml run` (weekly, Sunday 04:30): runs pip and every test as each venv's owner or service user, never a venv interpreter as root |
 | `newstron-fetch`, `newstron-security`, `newstron-digest`, `newstron-purger` (`.timer` + `.service`) | `newstron` | `/etc/newstron/newstron.env` | `/opt/newstron/venv/bin/python3 /opt/newstron/<script>.py`; the digest posts to the memory server, it does not touch a Maildir |
 | `amq-hygiene.timer` + `.service` | `memory` | — | weekly: mail older than 30 days moves from `new/` to `cur/`; nothing is deleted |
 

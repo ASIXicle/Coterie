@@ -1,15 +1,15 @@
 """pane_key_check + check_pane_key_auth under stubbed state: kill switch, type, roster, whitelist,
-busy, cooldown, exact-match, auth. `python3 test_pane_key.py`. Companion to spec.md T1-T7."""
+busy, cooldown, exact-match, auth. `python3 test_pane_key.py`."""
 import os, sys, importlib.util, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "birds-test.json")
+os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "agents-test.json")
 os.environ.setdefault("CHORUSD_STATE_DIR", tempfile.mkdtemp())
 os.environ["CHORUSD_PANE_KEY_ENABLED"] = "1"
 os.environ["CHORUSD_PANE_KEY_TOKEN_PATH"] = "/nonexistent-token-path-for-tests"
 
 spec = importlib.util.spec_from_file_location("chorusd", os.path.join(HERE, "..", "chorusd.py"))
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
-c.load_birds()   # ALL_BIRDS = ["orch", "bee"] from birds-test.json
+c.load_birds()   # ALL_BIRDS = ["orch", "bee"] from agents-test.json
 
 now = [1000.0]
 def check(bird, cmd, dt=0):
@@ -70,8 +70,8 @@ status, resp, ledger = check("bee", "/clear", dt=c.PANE_KEY_COOLDOWN + 101)
 assert status == 200, (status, resp, ledger)
 print("T8 kill switch: PANE_KEY_ENABLED=False -> 503 no ledger; True -> 200")
 
-# T9 type check — non-string bird or cmd rejects at 400 no ledger (review 2026-09-16 item 3: was TypeError/
-# AttributeError crash raised inside `with lock` before this check landed)
+# T9 type check — non-string bird or cmd rejects at 400 no ledger (before this check, a TypeError or
+# AttributeError was raised inside `with lock`)
 for bad_bird in (None, 42, ["bee"], {"x": 1}):
     status, resp, ledger = check(bad_bird, "/clear", dt=c.PANE_KEY_COOLDOWN + 200)
     assert status == 400 and "must be strings" in resp["error"] and ledger is None, (bad_bird, status, resp, ledger)

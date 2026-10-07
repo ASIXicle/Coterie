@@ -86,11 +86,13 @@ Four commands cover everything below:
   and ends with its pass line, the check it makes itself.
 - `sudo bash install.sh` — every stage in order, skipping what is already done; stops at the first
   `HOLD` with the reason. Rerunning is always safe.
-- Stage 4 (the portal) is its own script, `portal/install/install-fresh.sh`. To see every file it
-  would write and every command it would run, without root and without touching the host:
-  `COTERIE_TEST_ROOT=/tmp/coterie-preview bash portal/install/install-fresh.sh`, then read
-  `/tmp/coterie-preview/commands.log` and the files under that directory. (It needs
-  `config/agents.json` and `portal/install/site.env` first: §1.)
+- Stage 4 (the portal) is its own script, `portal/install/install-fresh.sh`, and `install.sh --check`
+  includes its preview: `install-fresh.sh --check` names every file it would place as `PLAN` (not
+  there), `UPDATE` (differs from this machine's) or `SAME`, and every command as `WOULD`, and changes
+  nothing; it works without root, and says so for a root-only file it cannot read. To see the files
+  themselves, written somewhere you can read: `COTERIE_TEST_ROOT=/tmp/coterie-preview bash
+  portal/install/install-fresh.sh`, then read `/tmp/coterie-preview/commands.log` and the files under
+  that directory. (Both need `config/agents.json` and `portal/install/site.env` first: §1.)
 
 Run the stages in order. Each one checks what it needs before it changes anything, and a stage
 whose input is missing stops with a `HOLD` naming what to do first; without a roster, for example:
@@ -179,9 +181,11 @@ What stage 3 puts on the host:
 - `/opt/memory`, `root:root 0755`: the virtualenv, `server.py` and the files it loads from beside
   itself (`maildir.py`, `heads/score.py`), and `VERSION` (the commit of this tree, so the server can
   say which build it is). Root-owned, so the service cannot rewrite its own code.
-- The virtualenv in two steps: torch alone, from PyTorch's CPU index, then `memory/requirements.txt`
-  from PyPI alone. Two steps because one `pip` call with two indexes takes each unpinned package
-  from whichever index offers the higher version, the classic dependency-confusion shape.
+- The virtualenv: first a hash-pinned pip (`memory/pip-bootstrap.txt`; the distribution's bundled
+  pip can carry known advisories), then torch alone, from PyTorch's CPU index, then
+  `memory/requirements.txt` from PyPI alone. Torch and the rest are separate because one `pip` call
+  with two indexes takes each unpinned package from whichever index offers the higher version, the
+  classic dependency-confusion shape.
 - The embedding model at `/opt/memory/models/voyage-4-nano`, fetched at a pinned revision by
   `memory/tools/fetch-model.py`, every file size- and sha256-checked; the unit re-checks the model's
   own code against that pin before every start.
@@ -223,7 +227,8 @@ safe to run again. Its settings come from `portal/install/site.env` and the defa
 `portal/install/lib.sh`.
 
 ```bash
-COTERIE_TEST_ROOT=/tmp/coterie-preview bash portal/install/install-fresh.sh   # preview, no root
+bash portal/install/install-fresh.sh --check                                  # PLAN/UPDATE/SAME per file, against this machine; no root
+COTERIE_TEST_ROOT=/tmp/coterie-preview bash portal/install/install-fresh.sh   # the files themselves, under a scratch root; no root
 sudo bash install.sh --stage 4
 ```
 
@@ -439,7 +444,7 @@ routes, with a secret of its own; its user is in no mail group.
 ```bash
 sudo adduser --system --group --no-create-home --home /nonexistent newstron
 sudo install -d -m 0755 /opt/newstron && sudo install -m 0644 newstron/*.py /opt/newstron/
-sudo python3 -m venv /opt/newstron/venv && sudo /opt/newstron/venv/bin/pip install -q -r newstron/requirements.txt
+sudo python3 -m venv /opt/newstron/venv && sudo /opt/newstron/venv/bin/pip install -q --no-deps --require-hashes -r memory/pip-bootstrap.txt && sudo /opt/newstron/venv/bin/pip install -q -r newstron/requirements.txt
 sudo install -d -o newstron -g newstron -m 0750 /var/lib/newstron /var/log/newstron
 sudo install -d -m 0755 /etc/newstron && sudo install -m 0644 newstron/feeds.example.yaml /etc/newstron/feeds.yaml
 # one secret, three files, never on a command line: the memory server, the feed, and Hook & Shield's alerts
@@ -452,12 +457,57 @@ sudo sh -c 'printf "NEWSTRON_SECRET=%s\nMEMORY_URL=http://127.0.0.1:8765\n" "$(c
 sudo rm /root/newstron.secret && sudo systemctl restart memory
 sudo install -m 0644 newstron/systemd/* /etc/systemd/system/ && sudo systemctl daemon-reload
 sudo systemctl enable --now newstron-fetch.timer newstron-digest.timer newstron-purger.timer newstron-security.timer pip-audit-scan.timer
+# the memory server reloads its model after the restart above: wait until it answers (up to 90 s)
+for _ in $(seq 1 90); do curl -s -o /dev/null --max-time 2 http://127.0.0.1:8765/ && break; sleep 1; done
 sudo systemctl start newstron-fetch.service && sudo tail -n 3 /var/log/newstron/fetcher.log
 ```
-`feeds.yaml` holds ten generic feeds; edit it freely. **Pass line:** the fetcher's own log (not the
+`feeds.yaml` holds ten generic feeds; edit it freely. The first fetch takes a few minutes (every item
+is embedded). **Pass line:** the fetcher's own log (not the
 journal: under systemd it writes only to `/var/log/newstron/fetcher.log`) ends
 `fetcher complete: N new items` with N above 0, and the run exits 0; the first digest appears under
 `/var/lib/memory-amq/news/inbox/new/` after its timer runs.
+
+**Weekly venv patching** (`hookandshield/venv-autopatch.py`; needs the news feed above, whose venv
+holds `pip-audit`). Once a week (Sundays 04:30) it audits the memory and news venvs and applies the
+fixes it is allowed to: a PyPI release in the installed major version that fixes every advisory, at
+least 7 days old, with a wheel for this Python; of those, the oldest. Each fix is rehearsed on a copy
+of the venv first (`pip check`, the venv's own tests, and for the memory venv a gate that the
+embedding vectors don't move), then applied while the venv's services are stopped or quiet; any
+failure puts the old versions back. Packages not from PyPI, and anything changed by hand since the
+last run, are reported, never touched. The report goes to the `news` mailbox every week, and to the
+operator's whenever something failed, a fix could not be applied, a venv could only be audited, or a
+venv was busy at patch time two weeks running.
+The rules are in the tool's docstring; the per-install choices are in the config.
+
+No venv interpreter ever runs as root: each venv gets an owner of its own, and the services only
+read it.
+
+```bash
+sudo apt-get install -y python3-packaging      # jq is already a prerequisite
+sudo adduser --system --group --no-create-home --home /nonexistent memory-venv
+sudo adduser --system --group --no-create-home --home /nonexistent newstron-venv
+sudo chown -R -h memory-venv:memory-venv /opt/memory/venv        # -h: a link's own owner, never its target's
+sudo chown -R -h newstron-venv:newstron-venv /opt/newstron/venv
+sudo install -m 0644 hookandshield/venv-autopatch.py /opt/shield/
+op=$(jq -r '.operator // "operator"' /etc/coterie/agents.json)   # your mailbox, as setup named it
+sed "s/^failures_mailbox = .*/failures_mailbox = \"$op\"/" hookandshield/venv-autopatch.example.toml | sudo install -m 0644 /dev/stdin /etc/venv-autopatch.toml
+sudo install -m 0644 hookandshield/systemd/venv-autopatch.service hookandshield/systemd/venv-autopatch.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+for v in memory newstron; do sudo python3 -I /opt/shield/venv-autopatch.py --config /etc/venv-autopatch.toml adopt $v; done
+sudo python3 -I /opt/shield/venv-autopatch.py --config /etc/venv-autopatch.toml plan
+sudo systemctl enable --now venv-autopatch.timer
+```
+On a memory server without the portal, the memory venv's idle check (it asks the portal's orchestrator
+whether an agent is mid-turn) never passes, so its runs defer and the second one mails you: delete the
+`idle_command` line from its block in `/etc/venv-autopatch.toml`. The rehearsal copies a venv, so keep
+about 1 GB free for the memory one.
+
+From then on, never run either venv's `pip` or `python` as root (root would execute whatever the venv
+holds). To add a package by hand, install it as the owner and tell the tool:
+`cd /tmp && sudo runuser -u memory-venv -- /opt/memory/venv/bin/pip install <package>`, then
+`sudo python3 -I /opt/shield/venv-autopatch.py --config /etc/venv-autopatch.toml adopt memory`.
+**Pass line:** the plan lists `memory` and `newstron`, neither says `audit only`, and
+`systemctl list-timers venv-autopatch.timer` shows the next Sunday.
 
 **The dashboard** (`dashboard/`): a web view of the memory server (memories, mailboxes, boots, the
 Hook & Shield state) and a box that sends mail as the operator. It runs from the memory server's
@@ -517,7 +567,9 @@ check). Then hand this list to someone who has not read the rest:
    timer does not ship in this version; until it does, one match is the pass.)
 6. `grep -rl "$(hostname)" /srv/portal /etc/caddy /etc/systemd/system/ttyd-*` — only the Caddyfile
    should name the host, and only where you wrote it.
-7. `SRV=/srv/portal bash tools/verify-mirror.sh` from your clone. It reports whether the clone is
+7. `SRV=/srv/portal/portal bash tools/verify-mirror.sh` from your clone (`SRV` is the portal's web
+   directory itself, as `install.sh` passes it; with a shorter one the three web files read "not
+   installed"). It reports whether the clone is
    pushed, whether a deploy checkout (set `DEPLOY=` if you keep one) has drifted, and whether each
    installed file in `tools/verify-mirror.pairs` still matches its source. The last line is
    `RESULT: fully mirrored` (or `mirrored`, with notes that say why). Run it after every change you

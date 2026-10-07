@@ -1,0 +1,19 @@
+{
+ "site": "t",
+ "orchestrator": "orch",
+ "doorbell_pair_max": 3,
+ "doorbell_pair_window": 1800,
+ "agents": [
+  {
+   "name": "orch",
+   "port": 1,
+   "color": "#000"
+  },
+  {
+   "name": "bee",
+   "port": 2,
+   "color": "#000",
+   "doorbell_cooldown": 0
+  }
+ ]
+}

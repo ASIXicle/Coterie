@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly audit and patch of the service venvs (timer)
+
+[Timer]
+# After the Sunday 03:00 pip-audit scan.
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

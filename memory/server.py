@@ -400,6 +400,7 @@ async def memory_store(
     memory_type: str = "session_note",
     collection: str = DEFAULT_COLLECTION,
     supersedes: str = "",
+    to_agent: str = "",
 ) -> str:
     """
     Store a memory chunk in the vector database.
@@ -416,7 +417,18 @@ async def memory_store(
         supersedes: ID of a memory this one replaces. If provided, the old
                     memory is auto-marked as superseded. Use for decisions
                     that override prior decisions (e.g., ceiling 14h → 6h).
+        to_agent: Handoffs only: the agent the handoff is for. chorus_init then
+                  ships it to that agent alone, and it can't push another
+                  agent's handoff out of that agent's boot. Stored under the
+                  default project ('general') it reaches that agent's boot in
+                  any lane; under a lane's project, only that lane's boots.
+                  Must be an agent on the roster. Empty = every boot of the
+                  handoff's project (the old behaviour).
     """
+    recipient, recipient_error = _handoff_recipient(memory_type, to_agent, FLOCK_AGENTS)
+    if recipient_error:
+        return json.dumps({"status": "error", "error": recipient_error})
+
     # H write-time ceiling: handoff entries carry
     # 500-word ceiling matching the flock's template. Reject-not-truncate —
     # silently cutting a lane handoff at boot is the inverted-persistence
@@ -453,6 +465,8 @@ async def memory_store(
     }
     extras, head_answers = stored_extras(collection, embedding[0])
     metadata.update(extras)
+    if recipient:
+        metadata["to_agent"] = recipient
 
     await asyncio.to_thread(
         coll.add,
@@ -493,8 +507,11 @@ async def memory_store(
         "stored_at": now,
         "supersedes": retracted_id,
     }
-    if supersedes_warning:
-        result["warning"] = supersedes_warning
+    if recipient:
+        result["to_agent"] = recipient
+    warnings = [w for w in (supersedes_warning, _handoff_scope_warning(recipient, project)) if w]
+    if warnings:
+        result["warning"] = " | ".join(warnings)
     result["heads"] = head_answers
 
     return json.dumps(result)
@@ -2191,6 +2208,64 @@ KNOWN_IDENTITY_AGENTS = _ROSTER["known_identity_agents"]  # + retired birds
 # withholding the entry from all other callers (review 2026-09-01).
 OTHER_IDENTITY_TRUNCATE_CHARS = 500  # non-self identity blocks shipped as short summary
 HANDOFF_RECENCY_DAYS = 15
+HANDOFF_BOOT_LIMIT = 3  # handoffs a boot ships, newest first
+
+
+def _handoff_recipient(memory_type: str, to_agent: str, roster) -> tuple[str, str]:
+    """Normalise memory_store's `to_agent`. Returns (name, error); error is "" when it's usable.
+
+    Only a handoff can be addressed, because chorus_init is the field's only reader. A name off the
+    roster is refused rather than stored: a typo would hide the handoff from every agent."""
+    name = (to_agent or "").strip().lower()
+    if not name:
+        return "", ""
+    if memory_type != "handoff":
+        return "", "to_agent applies to handoffs only (chorus_init is its only reader)"
+    if name not in roster:
+        return "", f"to_agent {name!r} is not an agent on the roster ({', '.join(sorted(roster))})"
+    return name, ""
+
+
+HANDOFF_SHARED_PROJECT = "general"  # memory_store's default project; not a lane
+
+
+def _handoff_scope_warning(recipient: str, project: str) -> str:
+    """A warning for memory_store's caller when an addressed handoff is stored under a lane's project:
+    it reaches that agent only in boots of that project, which the writer may not mean."""
+    if not recipient or project == HANDOFF_SHARED_PROJECT:
+        return ""
+    return (f"to_agent {recipient!r} under project {project!r}: it reaches {recipient}'s boots of "
+            f"{project!r} only. Store it under {HANDOFF_SHARED_PROJECT!r} to reach {recipient} in any lane.")
+
+
+def _select_handoffs(pairs, agent: str, project: str, cutoff: str, limit: int = HANDOFF_BOOT_LIMIT):
+    """The handoffs a boot ships: (id, document, metadata) triples, newest first.
+
+    In scope: rows stored under the boot's project, plus rows addressed to this caller under the
+    shared project, which isn't a lane, so they follow their agent into any lane's boot. An
+    addressed row under some other project stays in that project: lanes scope content. Then
+    superseded and older-than-cutoff rows go, and for a named caller so do rows addressed to
+    another agent, all BEFORE the limit, so a handoff for one agent can't push another agent's out
+    of its boot. Rows with no `to_agent` (every row stored before the field existed) still ship to
+    every boot of their project."""
+    pairs = [
+        p for p in pairs
+        if p[2].get("project") == project
+        or (agent and p[2].get("project") == HANDOFF_SHARED_PROJECT
+            and (p[2].get("to_agent") or "").lower() == agent)
+    ]
+    # Superseded rows are filtered the way memory_search and the bootstrap loop filter them;
+    # without it a chain of same-lane handoffs shipped every version, not just the current one.
+    pairs = [p for p in pairs if p[2].get("status") != "superseded"]
+    pairs = [p for p in pairs if p[2].get("stored_at", "") >= cutoff]
+    if agent:
+        pairs = [
+            p for p in pairs
+            if not p[2].get("to_agent")
+            or p[2].get("to_agent", "").lower() == agent
+        ]
+    pairs.sort(key=lambda p: p[2].get("stored_at", ""), reverse=True)
+    return pairs[:limit]
 
 
 # Item 7 (2026-09-04 CHORUS bootstrap round) — stale-flag machinery.
@@ -2717,15 +2792,16 @@ async def chorus_init(
         result["amq_count"] = len(amq_messages)
         result["identity_hint"] = "Agent not specified. Read bootstrap identities and your conversation context to determine who you are."
 
-    # 3. Recent handoffs — last 3 handoff-type memories for this project,
-    # bounded by HANDOFF_RECENCY_DAYS. When the caller is a known agent, skip
-    # handoffs whose to_agent metadata is set to someone else (missing
-    # to_agent still ships — legacy handoffs predate the field).
+    # 3. Recent handoffs — the newest HANDOFF_BOOT_LIMIT handoff-type memories in scope
+    # for this boot, bounded by HANDOFF_RECENCY_DAYS (_select_handoffs). memory_store's
+    # to_agent addresses one; a named caller skips handoffs addressed to someone else.
     handoffs = []
     try:
         mem_coll = get_or_create_collection("memories")
-        where_filter = {"$and": [{"type": "handoff"}, {"project": project}]}
-        # ChromaDB doesn't support ORDER BY, so pull more and sort client-side
+        # Every handoff, any project: _select_handoffs decides scope (the boot's project, plus
+        # handoffs addressed to this caller under the shared project). ChromaDB has no ORDER BY,
+        # so sorting is client-side there too.
+        where_filter = {"type": "handoff"}
         handoff_query = mem_coll.get(
             where=where_filter,
             include=["documents", "metadatas"],
@@ -2739,24 +2815,7 @@ async def chorus_init(
                 handoff_query["documents"],
                 handoff_query["metadatas"],
             ))
-            # Filter superseded rows the same
-            # way memory_search and the bootstrap loop do. Same class as
-            # the 2026-08-16 finding #4 fix for bootstrap; that fix never
-            # mirrored to handoffs, so a chain of same-lane handoffs
-            # shipped every version rather than just the current one.
-            pairs = [p for p in pairs if p[2].get("status") != "superseded"]
-            pairs = [p for p in pairs if p[2].get("stored_at", "") >= cutoff]
-            if agent:
-                pairs = [
-                    p for p in pairs
-                    if not p[2].get("to_agent")
-                    or p[2].get("to_agent", "").lower() == agent
-                ]
-            pairs.sort(
-                key=lambda p: p[2].get("stored_at", ""),
-                reverse=True,
-            )
-            for hid, hdoc, hmeta in pairs[:3]:
+            for hid, hdoc, hmeta in _select_handoffs(pairs, agent, project, cutoff):
                 handoffs.append({
                     "id": hid,
                     "content": hdoc,
@@ -3726,8 +3785,8 @@ async def _bootstrap_patch_locked(
     if tags:
         tags_last_refreshed = now
     metadata = dict(old_meta or {})
-    # PR re-review — B1 inheritance one layer out: bootstrap_patch has no
-    # skip_history (A3) and always writes history, so inherited history_skip_*
+    # bootstrap_patch has no skip_history option and always writes history,
+    # so inherited history_skip_*
     # would falsely assert the CURRENT version skipped history when it did not.
     # meta_sha256 covers history_skipped, so the wrong claim would travel.
     # Latent only today (no live entry carries these) — but clean-on-write
@@ -3907,9 +3966,15 @@ async def canary_check() -> str:
     expected memory IDs in the top-3 results. Reports pass/fail
     per canary with similarity scores.
 
-    Loads canaries from canaries.yaml (living document, versioned in Forgejo).
+    Loads canaries from canaries.yaml beside server.py. The file is optional: a fresh install has
+    none, and the tool then says so instead of failing.
     Stores results as type=canary_run in the memories collection.
     """
+    if not os.path.exists(CANARY_FILE):
+        return json.dumps({"status": "no_canaries", "note": (
+            f"No canaries file at {CANARY_FILE}, so there is nothing to check. Canaries are optional: "
+            "a list of queries, each with the memory IDs it must return in the top 3. Add one when "
+            "you want search relevance checked.")})
     try:
         with open(CANARY_FILE, "r") as f:
             config = yaml.safe_load(f)

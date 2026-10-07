@@ -1,0 +1,36 @@
+# venv-autopatch.service: the weekly audit-and-patch of the service venvs (venv-autopatch.example.toml).
+# Root, because it installs as each venv's owner and stops and starts the units that use them; it runs
+# the system Python and never imports code from a venv.
+[Unit]
+Description=Weekly audit and patch of the service venvs
+After=network-online.target pip-audit-scan.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/shield/venv-autopatch.py --config /etc/venv-autopatch.toml run
+# No EnvironmentFile: the report goes straight into the mail root, so this unit holds no secret, and
+# nothing a service user can write reaches a root process's environment (README, invariant).
+StateDirectory=venv-autopatch
+StateDirectoryMode=0711
+TimeoutStartSec=3h
+# SIGTERM goes to the tool only, which rolls back and restarts what it stopped before it exits.
+# Worst case after a SIGTERM mid-apply, the memory venv (two units at systemd's 90 s defaults):
+# stop both again 2 x 90 s, reinstall from local wheels ~2 min, start both 2 x 90 s, health check up
+# to 180 s, inspect + ledger + two deliveries ~1 min: about 12 min, so 15. Raise it with the units'
+# own timeouts or health_timeout_seconds. budget_minutes in the config stays below the 3 h.
+KillMode=mixed
+TimeoutStopSec=15min
+PrivateTmp=yes
+ProtectSystem=full
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

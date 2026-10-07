@@ -1,0 +1,4 @@
+# pip for a new venv, hash-pinned (wheel sha256 from PyPI, checked against the downloaded bytes).
+# `python3 -m venv` brings the distribution's bundled pip, which can carry known advisories; install this
+# first, before anything else goes into the venv. venv-autopatch keeps it current afterwards.
+pip==26.2.1 --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e

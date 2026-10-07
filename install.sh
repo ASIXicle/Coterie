@@ -27,8 +27,9 @@ MEMORY_MODEL_DIR=${MEMORY_MODEL_DIR:-/opt/memory/models/voyage-4-nano}   # the p
 ROSTER_LIVE=/etc/coterie/agents.json
 # server.py and every file it loads from beside itself when it starts. The first install walk
 # (2026-10-02) copied server.py alone and the service died on each start looking for heads/score.py.
-# Keep this list equal to what server.py loads beside itself at start (its spec_from_file_location calls).
-MEMORY_FILES="server.py maildir.py heads/score.py"
+# Keep this list equal to what server.py loads beside itself at start (its spec_from_file_location calls),
+# plus tools/cosine_gate.py, which the weekly venv patching runs from /opt/memory/tools (INSTALL §7).
+MEMORY_FILES="server.py maildir.py heads/score.py tools/cosine_gate.py"
 # Registering the memory server with an agent's Claude Code, run AS the agent with the address on
 # standard input. Two things the first install walk (2026-10-02) showed about `claude mcp`:
 # - it defaults to the scope of the directory it is run in. Run from root's directory, the
@@ -140,8 +141,8 @@ stage3() {
   stage 3 "memory server → /opt/memory (root-owned), state under $MEMORY_HOME, /etc/memory.env, memory.service"
   [ -f "$HERE/memory/server.py" ] || { skip "memory/server.py"; return 0; }
   need_root || return 1
-  for f in memory/requirements.txt memory/systemd/memory.service memory/tools/fetch-model.py; do [ -f "$HERE/$f" ] || hold "memory/ is incomplete: $f missing" || return 1; done
-  [ -x /opt/memory/venv/bin/python3 ] && ok "/opt/memory/venv" || { doit install -d -m 0755 /opt/memory; doit python3 -m venv /opt/memory/venv; doit /opt/memory/venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu "$(grep -m1 '^torch==' "$HERE/memory/requirements.txt")"; doit /opt/memory/venv/bin/pip install -q -r "$HERE/memory/requirements.txt"; }   # torch from its index alone, the rest from PyPI alone (requirements.txt)
+  for f in memory/requirements.txt memory/pip-bootstrap.txt memory/systemd/memory.service memory/tools/fetch-model.py; do [ -f "$HERE/$f" ] || hold "memory/ is incomplete: $f missing" || return 1; done
+  [ -x /opt/memory/venv/bin/python3 ] && ok "/opt/memory/venv" || { doit install -d -m 0755 /opt/memory; doit python3 -m venv /opt/memory/venv; doit /opt/memory/venv/bin/pip install -q --no-deps --require-hashes -r "$HERE/memory/pip-bootstrap.txt"; doit /opt/memory/venv/bin/pip install -q --index-url https://download.pytorch.org/whl/cpu "$(grep -m1 '^torch==' "$HERE/memory/requirements.txt")"; doit /opt/memory/venv/bin/pip install -q -r "$HERE/memory/requirements.txt"; }   # torch from its index alone, the rest from PyPI alone (requirements.txt)
   local f changed=0
   for f in $MEMORY_FILES; do [ -f "$HERE/memory/$f" ] || hold "memory/ is incomplete: $f missing" || return 1; done
   for f in $MEMORY_FILES; do
@@ -157,13 +158,14 @@ stage3() {
     else printf '%s\n' "$sha" > /opt/memory/VERSION; chmod 0644 /opt/memory/VERSION; say "  DO    /opt/memory/VERSION written (${sha:0:12})"; changed=1; fi
   else note "$HERE is not a git checkout: the memory server will report its commit as unknown"; fi
   # MEMORY_EMBEDDING_MODEL names the model DIRECTORY itself (docs/LAYOUT.md; the server reads a dir).
-  # fetch-model.py (memory owner's tool) fetches the pinned upstream revision into --into with every
+  # fetch-model.py (standard library only, so root runs it on the system Python: root never executes a venv,
+  # which may belong to venv-autopatch's owner by now) fetches the pinned upstream revision into --into with every
   # file size+sha256-verified, or VERIFIES a directory that already exists (exit 1 if it differs: an
   # existing dir is never assumed), and writes the .modeling.sha256 the unit's ExecStartPre checks.
   # ~700 MB of download and disk. Always run: a present directory is proven, not trusted.
   local model_dir=$MEMORY_MODEL_DIR
   if [ "$CHECK" = 1 ]; then [ -f "$model_dir/config.json" ] && plan "verify the model at $model_dir against the pin (fetch-model.py)" || plan "fetch the pinned embedding model into $model_dir (~700 MB; fetch-model.py)"; else
-    /opt/memory/venv/bin/python3 "$HERE/memory/tools/fetch-model.py" --into "$model_dir" >/dev/null || hold "fetch-model.py failed: the model is not installed or an existing $model_dir does not match the pin (its stderr says which)" || return 1
+    python3 -I "$HERE/memory/tools/fetch-model.py" --into "$model_dir" >/dev/null || hold "fetch-model.py failed: the model is not installed or an existing $model_dir does not match the pin (its stderr says which)" || return 1
     [ -f "$model_dir/.modeling.sha256" ] && sha256sum -c --quiet "$model_dir/.modeling.sha256" || hold "$model_dir/.modeling.sha256 missing or failing — the unit's ExecStartPre would refuse to start" || return 1
     ok "model at $model_dir, verified against the pin"; fi
   for d in "$MEMORY_DATA_DIR" "$MEMORY_HOME/bootstrap-history"; do [ -d "$d" ] && ok "$d" || doit install -d -o memory -g memory -m 0700 "$d"; done
@@ -202,6 +204,10 @@ stage4() {
     else plan "render the portal's files from the roster and install them: web root, orchestrator, wrappers, tmux.conf, sudoers, one pane unit per agent (portal/install/install-fresh.sh)"; plan "start the panes and the orchestrator on loopback; write and validate build/Caddyfile (setup.sh installs it when /etc/caddy/Caddyfile is still the package's own)"; fi
     local c n; c=$(coordinator); n=$(printf '%s\n' "$c" | grep -c .)
     case "$n" in 1) [ -f /etc/chorusd/pane-key.token ] && ok "/etc/chorusd/pane-key.token exists" || plan "stage 3b: /etc/chorusd/pane-key.token ($(orchestrator):$c 0640; $c is the roster's coordinator)";; 0) note "no agent carries role: coordinator — stage 3b would install no token (every /matron dispatch 401 until one does)";; *) hold "$n active agents carry role: coordinator; exactly one may" || return 1;; esac
+    # the portal script's own preview: every file it would place, against this machine (PLAN, UPDATE,
+    # SAME), and every command (WOULD); it changes nothing. Captured whole, never piped into grep -q.
+    local preview; preview=$(bash "$HERE/portal/install/install-fresh.sh" --check 2>&1) || note "install-fresh.sh --check stopped: $(tail -1 <<<"$preview")"
+    sed 's/^/        /' <<<"$preview"
     return 0; fi
   # One script, from nothing, stopping at its first failure. This stage used to run the portal's
   # four upgrade scripts in a row with no check between them; on an empty machine each of them

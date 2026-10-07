@@ -6,7 +6,7 @@ Drives the real Handler over loopback, on the routes that are harmless here (doo
 on /fire with the typing stubbed. `python3 test_post_guard.py`."""
 import os, json, tempfile, importlib.util, threading, urllib.request, urllib.error
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "birds-test.json")
+os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "agents-test.json")
 os.environ.setdefault("CHORUSD_STATE_DIR", tempfile.mkdtemp())
 os.environ["CHORUSD_MATRON_DIR"] = tempfile.mkdtemp()
 SECRET = "front-door-secret-for-the-test"

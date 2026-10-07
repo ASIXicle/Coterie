@@ -3,13 +3,13 @@ refusal. `python3 test_matron.py`. The pointer is what an agent's CLAUDE.md bloc
 shape assertions here are the contract with that block."""
 import os, sys, importlib.util, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "birds-test.json")
+os.environ["COTERIE_AGENTS_JSON"] = os.path.join(HERE, "agents-test.json")
 os.environ.setdefault("CHORUSD_STATE_DIR", tempfile.mkdtemp())
 os.environ["CHORUSD_PANE_KEY_TOKEN_PATH"] = "/nonexistent-token-path-for-tests"
 
 spec = importlib.util.spec_from_file_location("chorusd", os.path.join(HERE, "..", "chorusd.py"))
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
-c.load_birds()   # ALL_BIRDS = ["orch", "bee"] from birds-test.json
+c.load_birds()   # ALL_BIRDS = ["orch", "bee"] from agents-test.json
 
 GOOD = {"bird": "bee", "repo": "~/repos/coterie", "file": "init/README.md", "commit": "ff12466", "lines": "346-700",
         "section": "### Bee — default lane", "sender": "orch"}

@@ -1,0 +1,72 @@
+# venv-autopatch: which venvs to patch weekly, how to test each one, and which services use it.
+# Install as /etc/venv-autopatch.toml (root, 0644). Paths below are the release layout (docs/LAYOUT.md);
+# cosine_gate.py is in /opt/memory/tools/ (install.sh puts it there). Everything here is site configuration; the rules
+# that decide what may be applied are in the tool and the same everywhere (see its docstring).
+#
+# Placeholders in tests and checks: {new} is the python of the venv being tested (the rehearsal
+# copy, or the live venv after applying), {old} the untouched live python (only meaningful in
+# `tests`, which run during the rehearsal), {work} a scratch directory owned by test_user.
+#
+# Nothing to maintain by hand: holds are optional. A version that fails this install's tests is
+# remembered and skipped; a package someone changes by hand becomes user-managed (reported, not
+# touched) until `venv-autopatch.py release <venv> <package>`. After a deliberate manual change to
+# a whole venv (an upgrade, a reinstall), run `venv-autopatch.py adopt <venv>`.
+
+cooldown_days = 7                                  # a release must be this old on PyPI
+state_dir = "/var/lib/venv-autopatch"
+quiet_minutes = 10                                 # a quiet unit's timer must not fire within this
+pip_audit = "/opt/newstron/venv/bin/pip-audit"
+audit_user = "newstron"
+prefer = "oldest"                                  # of the fixing releases, the oldest that qualifies
+
+# The weekly report goes into the news mailbox, beside the digest, written with the memory server's
+# maildir.py as the mail root's user: no memory server needed to report its own failure.
+[report]
+maildir_root = "/var/lib/memory-amq"
+maildir_user = "memory"
+maildir_py = "/opt/memory/maildir.py"
+mailbox = "news"
+failures_mailbox = "operator"      # the operator's mailbox: INSTALL §7 replaces this with the roster's "operator"
+                                   # (agents.json; setup names it after you). Failures, fixes left unapplied,
+                                   # audit-only venvs and two deferrals running reach a person there
+
+# No venv interpreter ever runs as root, so each service venv belongs to an unprivileged user of its own
+# (INSTALL section 7 creates `memory-venv` and `newstron-venv` and gives each its venv; the services only
+# read them). One owner per venv: whoever can act as one venv's owner can't reach another's code.
+# Tests run as the service user, which can read its own data (the memory gate needs a writable HOME:
+# the memory user's is /var/lib/memory).
+[[venv]]
+name = "memory"
+path = "/opt/memory/venv"
+owner = "memory-venv"
+test_user = "memory"
+stop_units = ["memory.service"]
+# Wait until no agent is mid-turn before stopping the server (needs the portal's chorusd). The health
+# check proves the server answers and its auth layer works; the rehearsal's import check and gate
+# cover the embedder.
+idle_command = "curl -s --max-time 3 http://127.0.0.1:8766/status | jq -e '.doorbell.busy == {}' >/dev/null"
+health_command = "test \"$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8765/news/search)\" = 401"
+import_check = ["/opt/memory/server.py"]
+# The embedding gate: a library change must not move the vectors of what is already stored.
+tests = [
+  "{old} /opt/memory/tools/cosine_gate.py sample --out {work}/sample.json --store /var/lib/memory/chromadb",
+  "nice {old} /opt/memory/tools/cosine_gate.py embed --sample {work}/sample.json --out {work}/old.npz --model /opt/memory/models/voyage-4-nano",
+  "nice {new} /opt/memory/tools/cosine_gate.py embed --sample {work}/sample.json --out {work}/new.npz --model /opt/memory/models/voyage-4-nano",
+  "{old} /opt/memory/tools/cosine_gate.py compare {work}/old.npz {work}/new.npz --min 0.9999",
+]
+
+# The news feed and the weekly scanner. Listed last: the audit uses this venv's pip-audit.
+[[venv]]
+name = "newstron"
+path = "/opt/newstron/venv"
+owner = "newstron-venv"
+test_user = "newstron"
+quiet_units = ["newstron-fetch.service", "newstron-security.service", "newstron-digest.service",
+               "newstron-purger.service", "pip-audit-scan.service"]
+import_check = ["/opt/newstron/fetcher.py", "/opt/newstron/digest.py", "/opt/newstron/pip-audit-scan.py"]
+checks = ["{new} -m pip_audit --version"]
+tests = ['''{new} -c "import feedparser, requests; r = requests.get('https://pypi.org/rss/project/pip/releases.xml', timeout=30); r.raise_for_status(); assert feedparser.parse(r.content).entries"''']
+
+# Optional, per venv: packages never to patch, with the reason.
+# [venv.holds]
+# somepackage = "pinned for a plugin that breaks on 3.x"

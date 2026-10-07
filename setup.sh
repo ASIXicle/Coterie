@@ -324,7 +324,7 @@ install_it() {
   say "    5  each agent's settings and its connection to persMEM"
   say "    6  the integrity check that watches those settings"
   say "    7  (the news feed and the dashboard are optional and installed by hand: INSTALL §7)"
-  say "    8  a final check of everything above"
+  say "    8  a final check of everything above (the git server, set up in step 6, is checked again after it)"
   ask_valid A_GO "  Start? (y/n)" "y" ck_yn
   is_yes "$A_GO" || { say "  Nothing was installed. Your answers are saved; rerun  sudo bash $HERE/setup.sh  when ready."; exit 0; }
   say
@@ -346,7 +346,7 @@ install_it() {
 CADDY_LIVE=${CADDY_LIVE:-/etc/caddy/Caddyfile}
 front_door() {
   local built=$HERE/portal/build/Caddyfile shipped code
-  if grep -q 'import portal' "$CADDY_LIVE" 2>/dev/null; then ok "$CADDY_LIVE already serves the portal"; else
+  if grep -q 'import portal' "$CADDY_LIVE" 2>/dev/null; then update_front_door "$built"; else
     [ -f "$built" ] || die "$built was not rendered; rerun:  sudo bash $HERE/install.sh --stage 4"
     shipped=$(dpkg-query -W -f='${Conffiles}\n' caddy 2>/dev/null | awk '$1 == "/etc/caddy/Caddyfile" {print $2}')
     if [ -f "$CADDY_LIVE" ] && { [ -z "$shipped" ] || [ "$(md5sum < "$CADDY_LIVE" | cut -d' ' -f1)" != "$shipped" ]; }; then
@@ -376,12 +376,40 @@ front_door() {
   ok "https://$A_LAN_IP/ asks for the portal password (401 without it; install-fresh.sh --front-door signed in and found every pane)"
 }
 
+# The file in place already serves the portal. If it is the installer's own (install-fresh.sh's header
+# on line 1) and the newly rendered one differs, the live file is replaced, keeping the git server's
+# block between its markers (forge_door's), validated, and Caddy restarted; a refused file goes back.
+# Before this, an upgrade left the portal on its old Caddyfile for good (first cut, setup.sh:349).
+# A file the operator merged the portal into by hand is never touched: it is theirs.
+update_front_door() {
+  local built=$1 forge_part n1 n2 l1 l2
+  if ! head -1 "$CADDY_LIVE" | grep -q '^# Portal -- LAN.*Rendered by install-fresh.sh'; then
+    ok "$CADDY_LIVE already serves the portal (not the installer's own file, so it is left as it is; the newly rendered one is $built)"; return 0; fi
+  [ -f "$built" ] || { ok "$CADDY_LIVE already serves the portal"; return 0; }
+  n1=$(grep -c '^# >>> coterie forge >>>' "$CADDY_LIVE" || true); n2=$(grep -c '^# <<< coterie forge <<<' "$CADDY_LIVE" || true)
+  l1=$(grep -n -m1 '^# >>> coterie forge >>>' "$CADDY_LIVE" | cut -d: -f1 || true); l2=$(grep -n -m1 '^# <<< coterie forge <<<' "$CADDY_LIVE" | cut -d: -f1 || true)
+  if ! { [ "$n1$n2" = 00 ] || { [ "$n1$n2" = 11 ] && [ "$l1" -lt "$l2" ]; }; }; then
+    note "$CADDY_LIVE serves the portal, but its git-server markers are not one clean pair, so it is not updated (the forge step below says what to do)"; return 0; fi
+  forge_part=$(sed -n '/^# >>> coterie forge >>>/,/^# <<< coterie forge <<</p' "$CADDY_LIVE")
+  if [ "$(sed '/^# >>> coterie forge >>>/,/^# <<< coterie forge <<</d' "$CADDY_LIVE")" = "$(cat "$built")" ]; then ok "$CADDY_LIVE already serves the portal (current)"; return 0; fi
+  # -p and umask 077: the file carries the password's hash, so no copy of it may take root's 0644 umask
+  # (reviewer, 2026-10-06: the backups and the temporary file were world-readable)
+  cp -p "$CADDY_LIVE" "$CADDY_LIVE.pre-update"
+  ( umask 077; { cat "$built"; [ -z "$forge_part" ] || printf '%s\n' "$forge_part"; } > "$CADDY_LIVE.tmp" )
+  install -m 0640 -o root -g caddy "$CADDY_LIVE.tmp" "$CADDY_LIVE"; rm -f "$CADDY_LIVE.tmp"
+  # restart, not reload: the portal's Caddyfile turns Caddy's admin API off, and reload goes through it
+  if caddy validate --config "$CADDY_LIVE" >/dev/null 2>&1 && systemctl restart caddy; then ok "$CADDY_LIVE updated to the newly rendered portal file, the git server's block kept (the file before it is $CADDY_LIVE.pre-update)"; else
+    cp "$CADDY_LIVE.pre-update" "$CADDY_LIVE"; systemctl restart caddy || true
+    die "Caddy refused the newly rendered portal file, so the previous one is back in place. Why:  caddy validate --config $built   journalctl -u caddy -n 20"
+  fi
+}
+
 # ---------- the forge's LAN side: its site block joins the portal's Caddyfile, between its two markers ----------
 forge_door() {
   local block=$HERE/portal/build/Caddyfile.forge code
   [ -f "$block" ] || die "$block was not rendered (tools/boot-forge.sh writes it)"
   if ! grep -q 'import portal' "$CADDY_LIVE" 2>/dev/null; then
-    note "$CADDY_LIVE is not the portal's own, so I leave it alone: add the block in $block to it, then  systemctl reload caddy"; return 0; fi
+    note "$CADDY_LIVE is not the portal's own, so I leave it alone: add the block in $block to it, then  systemctl restart caddy  (restart, not reload: the admin API is off)"; return 0; fi
   # the two markers must be a clean pair, or absent: with a start and no end, the range below would run
   # to the end of the file and take the operator's other sites with it (found in review, 2026-10-01)
   local n1 n2 l1 l2
@@ -391,8 +419,9 @@ forge_door() {
     die "$CADDY_LIVE has $n1 start and $n2 end marker(s) for the git server's block, not one clean pair, so I will not edit it. Remove the leftover '# >>> coterie forge >>>' / '# <<< coterie forge <<<' lines and what is between them by hand, then rerun."
   fi
   if [ "$(sed -n '/^# >>> coterie forge >>>/,/^# <<< coterie forge <<</p' "$CADDY_LIVE")" = "$(cat "$block")" ]; then ok "$CADDY_LIVE already carries the git server's block"; else
-    cp "$CADDY_LIVE" "$CADDY_LIVE.pre-forge"
-    { sed '/^# >>> coterie forge >>>/,/^# <<< coterie forge <<</d' "$CADDY_LIVE.pre-forge"; cat "$block"; } > "$CADDY_LIVE.tmp" && cat "$CADDY_LIVE.tmp" > "$CADDY_LIVE" && rm -f "$CADDY_LIVE.tmp"
+    # -p and umask 077: the file carries the password's hash (see update_front_door); the temporary file is removed
+    cp -p "$CADDY_LIVE" "$CADDY_LIVE.pre-forge"
+    ( umask 077; { sed '/^# >>> coterie forge >>>/,/^# <<< coterie forge <<</d' "$CADDY_LIVE.pre-forge"; cat "$block"; } > "$CADDY_LIVE.tmp" ) && cat "$CADDY_LIVE.tmp" > "$CADDY_LIVE"; rm -f "$CADDY_LIVE.tmp"
     # restart, not reload: the portal's Caddyfile turns Caddy's admin API off, and reload goes through it
     if caddy validate --config "$CADDY_LIVE" >/dev/null 2>&1 && systemctl restart caddy; then ok "$CADDY_LIVE: the git server's block added (the file before it is $CADDY_LIVE.pre-forge)"; else
       cp "$CADDY_LIVE.pre-forge" "$CADDY_LIVE"; systemctl restart caddy || true
@@ -442,6 +471,15 @@ shield_claude_md() {
     esac
   done
   if [ "$added" -gt 0 ]; then chmod 0644 "$reg.tmp"; mv "$reg.tmp" "$reg"; else rm -f "$reg.tmp"; fi
+}
+
+# install.sh's stage 8 ran tools/verify-mirror.sh before this script set up the git server, so its
+# line for forge.service read "not installed": the order, not a fault (first cut). The check runs
+# once more here, after the git server, so the last word on the mirror is the true one.
+mirror_after_forge() {
+  local mirror
+  if mirror=$(SRV=/srv/portal/portal DEPLOY="$HERE" bash "$HERE/tools/verify-mirror.sh" 2>&1); then ok "verify-mirror, after the git server: $(tail -1 <<<"$mirror")"
+  else say "$mirror" | sed 's/^/    /'; die "verify-mirror: a file on this machine is not the one in $HERE (the DIFFERS or HOLD line above)"; fi
 }
 
 # ---------- 6. what install.sh leaves to the operator (INSTALL §5) ----------
@@ -581,6 +619,7 @@ finish() {
        bash "$HERE/tools/boot-repo.sh" "$BOOT_REPO" || die "the init-prompts repository was not set up (the HOLD above says why)"
        BOOT_URL=$BOOT_REPO;;
   esac
+  mirror_after_forge
   clone_boot() {   # clone_boot <agent>: its ~/repos/boot, pointed at BOOT_URL
     local a=$1 home c; home=$(home_of "$a"); c=$home/repos/boot
     if [ -d "$c/.git" ]; then

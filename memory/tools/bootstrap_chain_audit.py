@@ -19,13 +19,24 @@ another record in the same entry shares its pre-image content_sha256:
 A record whose superseded_by matches the live document is LANDED even if the sidecar has no landed_at
 (the marker is written after upsert returns; a cancellation in that window loses the marker, not the write).
 Intent replay (2026-09-09): when a sidecar carries `patches` ([{old_text,new_text}], as applied)
-(deployed sidecar key `patch_set`; `patches` also honoured) the audit re-applies them to the recorded before-image (the .md) and checks the result hashes to
+(deployed sidecar key `patch_set`; `patches` also honoured) the audit re-applies them to the recorded before-image (the .md)
+with the server's own `_bootstrap_patch_apply`, AST-extracted from server.py (PERSMEM_SERVER_PY overrides), and checks the result hashes to
 sidecar.superseded_by_sha256 and, if present, to sidecar.expected_after_sha256 (the caller's claim). All three
 from disk, nothing typed at audit time. INTENT-MISMATCH = the server's record of what it applied does not
 reproduce what it says it produced. Sidecars without `patches` (bootstrap_update writes) skip this rule.
 First use 2026-09-09: found a v6 orphan on a shared state entry from the
 cancelled 2026-09-08 retry. Exit status 1 on any defect so it can gate a test run."""
-import os, sys, json, hashlib, sqlite3, glob
+import os, sys, json, hashlib, sqlite3, glob, ast
+# Replay through the endpoint's own apply function, extracted the way tests/bootstrap_patch_test.py does it
+# (importing server.py has side effects). The audit used to carry a second, sequential str.replace copy that
+# ignored position="end" and expect_matches, so every append read INTENT-MISMATCH (found 2026-10-05).
+_SRV=os.environ.get("PERSMEM_SERVER_PY",os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","server.py"))
+_src=open(_SRV).read(); _ns={}
+for n in ast.parse(_src).body:
+    if (isinstance(n,ast.FunctionDef) and n.name=="_bootstrap_patch_apply") or (isinstance(n,ast.Assign)
+            and any(getattr(t,"id","").startswith("BOOTSTRAP_PATCH_") for t in n.targets)):
+        exec(ast.get_source_segment(_src,n),_ns)
+_apply=_ns["_bootstrap_patch_apply"]
 # LAYOUT: both derive from MEMORY_DATA_DIR (bootstrap history lives next to the store).
 _DATA=os.environ.get("MEMORY_DATA_DIR","/var/lib/memory/chromadb")
 H=os.path.join(os.path.dirname(os.path.abspath(_DATA)),"bootstrap-history")
@@ -82,12 +93,8 @@ for d in sorted(x for x in glob.glob(os.path.join(H,'*')) if os.path.isdir(x) an
         pset = s.get("patch_set") if isinstance(s.get("patch_set"),list) else s.get("patches")   # deployed key is patch_set
         cov['intent_evaluated' if isinstance(pset,list) else 'no_patch_set']+=1
         if isinstance(pset,list):
-            doc=open(os.path.join(d,base+'.md')).read(); ok_apply=True
-            for pch in pset:
-                o,n=pch.get("old_text",""),pch.get("new_text","")
-                if doc.count(o)!=1: ok_apply=False; break
-                doc=doc.replace(o,n,1)
-            got=sha(doc) if ok_apply else None
+            post,_,_=_apply(open(os.path.join(d,base+'.md')).read(),pset)
+            got=sha(post) if post is not None else None
             claim=s.get("expected_after_sha256")
             if got==sb and (claim in (None,"",got)): intent="  intent:ok"
             else: intent="  INTENT-MISMATCH"; defects.append((eid,base,"INTENT-MISMATCH"))

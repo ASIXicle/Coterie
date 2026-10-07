@@ -25,6 +25,10 @@
 #   install-fresh.sh --front-door    after /etc/caddy/Caddyfile serves the portal: export the
 #                                    web server's root certificate and probe the page and each
 #                                    pane through it. Nothing else is touched.
+#   install-fresh.sh --check         what a run would do on THIS machine, and nothing done: every
+#                                    file it places as PLAN (absent), UPDATE (differs) or SAME,
+#                                    every command as WOULD; works without root (a root-only file
+#                                    it cannot read is said so). install.sh --check runs this.
 #
 # Reads the roster and install/site.env through lib.sh (LAN_IP required).
 # COTERIE_TEST_ROOT=<dir> (tests only): every destination lands under <dir>, ownership is not
@@ -34,12 +38,24 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 need LAN_IP
 R=${COTERIE_TEST_ROOT:-}
-[ -n "$R" ] || [ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo bash $0" >&2; exit 1; }
-[ -z "$R" ] || mkdir -p "$R"
+CHECK=0; [ "${1:-}" != --check ] || { CHECK=1; shift; }
+[ -n "$R" ] || [ "$CHECK" = 1 ] || [ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo bash $0" >&2; exit 1; }
+[ -z "$R" ] || [ "$CHECK" = 1 ] || mkdir -p "$R"
 stop() { echo "STOP $*" >&2; exit 1; }
-sys()  { if [ -n "$R" ]; then printf '%s\n' "$*" >> "$R/commands.log"; else "$@"; fi; }
-put()  {   # put MODE OWNER SRC DEST
+n_place=0; n_update=0; n_same=0; n_unread=0
+okay() { [ "$CHECK" = 1 ] || echo "OK   $*"; }                      # a receipt for something done; --check does nothing
+need_or() { if [ "$CHECK" = 1 ]; then echo "  NOTE   $*"; else stop "$*"; fi; }   # a missing prerequisite: a stop, or under --check a note
+check_summary() { echo "CHECK: $n_place to place, $n_update to update, $n_same unchanged$( [ "$n_unread" = 0 ] || echo ", $n_unread in place but not readable without root"); nothing changed"; }
+sys()  { if [ "$CHECK" = 1 ]; then echo "  WOULD  $*"; elif [ -n "$R" ]; then printf '%s\n' "$*" >> "$R/commands.log"; else "$@"; fi; }
+put()  {   # put MODE OWNER SRC DEST; under --check: PLAN, UPDATE or SAME against what is at DEST, and nothing written
     [ -f "$3" ] || stop "$3 is missing: the tree is incomplete"
+    if [ "$CHECK" = 1 ]; then
+        if [ ! -e "$R$4" ]; then echo "  PLAN   $4"; n_place=$((n_place + 1))
+        elif [ ! -r "$R$4" ]; then echo "  ?      $4 (in place; not readable without root)"; n_unread=$((n_unread + 1))
+        elif cmp -s "$3" "$R$4"; then echo "  SAME   $4"; n_same=$((n_same + 1))
+        else echo "  UPDATE $4"; n_update=$((n_update + 1)); fi
+        return 0
+    fi
     if [ -n "$R" ]; then install -D -m "$1" "$3" "$R$4"; else install -D -m "$1" -o "$2" -g "$2" "$3" "$4"; fi
 }
 as_user() {   # as_user NAME HOME CMD...: run CMD as that account, HOME set; in a test root, as whoever runs the test
@@ -86,46 +102,51 @@ for u in $LIVE; do [ -f "$out/ttyd-$u.service" ] || stop "build/ttyd-$u.service 
 first=${LIVE%% *}
 ttyd_bin=$(sed -n 's/^ExecStart=\([^ ]*\) .*/\1/p' "$out/ttyd-$first.service")
 if [ -z "$R" ]; then
-    [ -x "$ttyd_bin" ] || stop "$ttyd_bin is not installed (install.sh stage 0 puts it there)"
-    for u in $LIVE $ME; do id "$u" >/dev/null 2>&1 || stop "no account '$u' on this machine (install.sh stage 2 creates them)"; done
-    command -v caddy >/dev/null || stop "caddy is not installed (install.sh stage 0)"
+    [ -x "$ttyd_bin" ] || need_or "$ttyd_bin is not installed (install.sh stage 0 puts it there)"
+    for u in $LIVE $ME; do id "$u" >/dev/null 2>&1 || need_or "no account '$u' on this machine (install.sh stage 2 creates them)"; done
+    command -v caddy >/dev/null || need_or "caddy is not installed (install.sh stage 0)"
 fi
 
 # --- web root: the page, the roster it reads, its stylesheet and fonts --------------------
 # root-owned: nothing writes here at run time, and the page is what the operator's browser runs
 # and what types into every pane, so the orchestrator's account must not be able to rewrite it
-if [ -n "$R" ]; then mkdir -p "$R$PORTAL_DIR/fonts"; else install -d -m 0755 -o root -g root "$PORTAL_ROOT" "$PORTAL_DIR" "$PORTAL_DIR/fonts"; fi
+[ "$CHECK" = 1 ] || { if [ -n "$R" ]; then mkdir -p "$R$PORTAL_DIR/fonts"; else install -d -m 0755 -o root -g root "$PORTAL_ROOT" "$PORTAL_DIR" "$PORTAL_DIR/fonts"; fi; }
 put 0644 root "$here/portal/index.html" "$PORTAL_DIR/index.html"
 put 0644 root "$cfg"                    "$PORTAL_DIR/agents.json"
 put 0644 root "$here/portal/tokens.css" "$PORTAL_DIR/tokens.css"
 for f in "$here"/portal/fonts/*; do put 0644 root "$f" "$PORTAL_DIR/fonts/$(basename "$f")"; done
-echo "OK   web root $PORTAL_DIR (root-owned)"
+okay "web root $PORTAL_DIR (root-owned)"
 
 # --- the orchestrator's code and the two wrappers it and the agents call ------------------
 put 0644 root "$here/chorus/chorusd.py"   "$CHORUSD_CODE"
 put 0755 root "$out/send-keys-to"         /usr/local/bin/send-keys-to
 put 0755 root "$out/$STOP_HOOK_NAME"      "/usr/local/bin/$STOP_HOOK_NAME"
-echo "OK   $CHORUSD_CODE, /usr/local/bin/send-keys-to, /usr/local/bin/$STOP_HOOK_NAME"
+okay "$CHORUSD_CODE, /usr/local/bin/send-keys-to, /usr/local/bin/$STOP_HOOK_NAME"
 
 # --- tmux: a file that was there before is kept once, as .pre-portal -----------------------
-if [ -f "$R/etc/tmux.conf" ] && ! cmp -s "$out/tmux.conf" "$R/etc/tmux.conf" && [ ! -e "$R/etc/tmux.conf.pre-portal" ]; then
+if [ "$CHECK" = 0 ] && [ -f "$R/etc/tmux.conf" ] && ! cmp -s "$out/tmux.conf" "$R/etc/tmux.conf" && [ ! -e "$R/etc/tmux.conf.pre-portal" ]; then
     cp -p "$R/etc/tmux.conf" "$R/etc/tmux.conf.pre-portal"
 fi
 put 0644 root "$out/tmux.conf" /etc/tmux.conf
-echo "OK   /etc/tmux.conf"
+okay "/etc/tmux.conf"
 
 # --- sudoers: checked first. A file sudo cannot parse, once in /etc/sudoers.d, breaks sudo. --
-sys visudo -cf "$out/sudoers.portal" >/dev/null || stop "build/sudoers.portal does not pass visudo -c; nothing was put in /etc/sudoers.d"
+if [ "$CHECK" = 1 ] && command -v visudo >/dev/null; then
+    visudo -cf "$out/sudoers.portal" >/dev/null || stop "build/sudoers.portal does not pass visudo -c"
+    echo "  OK     build/sudoers.portal passes visudo -c"
+else
+    sys visudo -cf "$out/sudoers.portal" >/dev/null || stop "build/sudoers.portal does not pass visudo -c; nothing was put in /etc/sudoers.d"
+fi
 put 0440 root "$out/sudoers.portal" /etc/sudoers.d/portal
-echo "OK   /etc/sudoers.d/portal ($ME may type into the agents' sessions through the wrapper, nothing else)"
+okay "/etc/sudoers.d/portal ($ME may type into the agents' sessions through the wrapper, nothing else)"
 
 # --- the orchestrator's state directory, and the units -------------------------------------
 state=${CHORUSD_STATE_DIR:-/var/lib/chorusd}
-if [ -n "$R" ]; then mkdir -p "$R$state"; else install -d -m 0711 -o "$ME" "$state"; fi
+[ "$CHECK" = 1 ] || { if [ -n "$R" ]; then mkdir -p "$R$state"; else install -d -m 0711 -o "$ME" "$state"; fi; }
 put 0644 root "$out/chorusd.service" /etc/systemd/system/chorusd.service
 for u in $LIVE; do put 0644 root "$out/ttyd-$u.service" "/etc/systemd/system/ttyd-$u.service"; done
 sys systemctl daemon-reload
-echo "OK   units: chorusd, $(for u in $LIVE; do printf 'ttyd-%s ' "$u"; done)"
+okay "units: chorusd, $(for u in $LIVE; do printf 'ttyd-%s ' "$u"; done)"
 
 # --- each agent's login block: a shell in its pane starts the agent program ----------------
 # Placed before the panes start, so the first shell each pane opens already has it. Replaced,
@@ -142,6 +163,16 @@ tmp=$(mktemp "$target.XXXXXX")
 { if [ -f "$target" ]; then awk -v o="$1" -v c="$2" '"'"'index($0,o){skip=1} !skip{print} index($0,c){skip=0}'"'"' "$target"; fi; cat; } > "$tmp"
 mv "$tmp" "$target"'
 for u in $LIVE; do
+    if [ "$CHECK" = 1 ]; then
+        if [ -n "$R" ]; then home=$R/home/$u; else home=$(getent passwd "$u" 2>/dev/null | cut -d: -f6); fi
+        state="profile not readable without root"
+        for f in .bash_profile .bash_login .profile; do
+            [ -n "$home" ] && [ -r "$home/$f" ] || continue
+            if grep -q "$MARKER" "$home/$f"; then state="replaced between its markers in $f"; else state="added to $f"; fi; break
+        done
+        [ -n "$home" ] && [ -d "$home" ] 2>/dev/null || state="no home directory yet (install.sh stage 2)"
+        echo "  WOULD  login block for $u, written as $u ($state)"; continue
+    fi
     if [ -n "$R" ]; then home=$R/home/$u; mkdir -p "$home"; else home=$(getent passwd "$u" | cut -d: -f6); fi
     [ -n "$home" ] && [ -d "$home" ] || stop "$u has no home directory"
     # the block arrives on standard input, so the agent needs no read access to this tree
@@ -149,18 +180,22 @@ for u in $LIVE; do
         | as_user "$u" "$home" bash -c "$EDIT" edit "$MARKER" "$MARKER_CLOSE" \
         || stop "could not write the login block as $u"
 done
-echo "OK   login block in each agent's profile (written as the agent)"
+okay "login block in each agent's profile (written as the agent)"
 
 # --- the front door's secret, before the orchestrator starts: chorusd reads it once, at start. Caddy
 # adds it to every /chorus/* request it relays (the site's Caddyfile, below); the page's routes answer
 # nothing without it. Made once; root:<orchestrator> 0640, the pane-key token's pattern.
 front_file=$R$FRONT_TOKEN_FILE
+if [ "$CHECK" = 1 ]; then
+    if [ -s "$front_file" ]; then echo "  SAME   $FRONT_TOKEN_FILE (the front door's secret, kept)"; n_same=$((n_same + 1)); else echo "  PLAN   $FRONT_TOKEN_FILE (the front door's secret, made once)"; n_place=$((n_place + 1)); fi
+else
 if [ ! -s "$front_file" ]; then
     install -d -m 0755 "$(dirname "$front_file")"
     ( umask 077; head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > "$front_file" )
 fi
 [ -n "$R" ] || { chown "root:$ME" "$front_file"; chmod 0640 "$front_file"; }
-echo "OK   $FRONT_TOKEN_FILE (the front door's secret for the orchestrator)"
+fi
+okay "$FRONT_TOKEN_FILE (the front door's secret for the orchestrator)"
 
 # --- start: panes on loopback, then the orchestrator ---------------------------------------
 for u in $LIVE; do sys systemctl -q enable "ttyd-$u.service"; sys systemctl restart "ttyd-$u.service"; done
@@ -186,12 +221,20 @@ ca_id=$( { cat /etc/machine-id 2>/dev/null || hostname; } | sha256sum | cut -c1-
 # (adversarial pass, 2026-10-02). Made once and kept root-only, so the operator can read it again
 # with sudo; the Caddyfile carries only its bcrypt hash, made from standard input, never argv.
 pw_file=$R$PORTAL_PASSWORD_FILE; hash_file=$R$PORTAL_HASH_FILE; user=$(portal_user)
-if [ ! -s "$pw_file" ]; then
+if [ "$CHECK" = 1 ]; then
+    if [ -s "$pw_file" ]; then echo "  SAME   $PORTAL_PASSWORD_FILE (the portal password, kept)"; n_same=$((n_same + 1)); else echo "  PLAN   $PORTAL_PASSWORD_FILE (the portal password, made once)"; n_place=$((n_place + 1)); fi
+    if [ -s "$hash_file" ]; then echo "  SAME   $PORTAL_HASH_FILE"; n_same=$((n_same + 1)); else echo "  PLAN   $PORTAL_HASH_FILE (its hash, for the Caddyfile)"; n_place=$((n_place + 1)); fi
+    if ! { [ -r "$hash_file" ] && [ -r "$front_file" ]; }; then
+        echo "  PLAN   $out/Caddyfile (rendered and validated once the hash and the front door's secret exist and can be read)"
+        check_summary; exit 0
+    fi
+fi
+if [ "$CHECK" = 0 ] && [ ! -s "$pw_file" ]; then
     install -d -m 0755 "$(dirname "$pw_file")"
     ( umask 077; head -c 18 /dev/urandom | base64 | tr -d '/+=\n' > "$pw_file" )
     rm -f "$hash_file"
 fi
-if [ ! -s "$hash_file" ] || [ "$pw_file" -nt "$hash_file" ]; then
+if [ "$CHECK" = 0 ] && { [ ! -s "$hash_file" ] || [ "$pw_file" -nt "$hash_file" ]; }; then
     if [ -n "$R" ] && ! command -v caddy >/dev/null; then h='$2a$14$test.root.only.no.caddy.here'
     else h=$(printf '%s\n' "$(cat "$pw_file")" | caddy hash-password) || stop "caddy hash-password failed"; fi
     ( umask 077; printf '%s\n' "$h" > "$hash_file" )
@@ -244,9 +287,16 @@ front=$(cat "$front_file"); snippet=$(cat "$out/Caddyfile.portal")
     echo "}"
 } > "$out/Caddyfile"
 )   # 0600: it carries the password's hash
+if [ "$CHECK" = 1 ]; then
+    if command -v caddy >/dev/null; then
+        caddy validate --config "$out/Caddyfile" >/dev/null 2>&1 || stop "build/Caddyfile does not validate:  caddy validate --config $out/Caddyfile"
+        echo "  OK     $out/Caddyfile rendered and validates (install it: setup.sh, or by hand as the NEXT lines of a real run say)"
+    else echo "  NOTE   $out/Caddyfile rendered; caddy is not installed here, so it was not validated"; fi
+    check_summary; exit 0
+fi
 sys caddy validate --config "$out/Caddyfile" >/dev/null 2>&1 \
     || stop "build/Caddyfile does not validate:  caddy validate --config $out/Caddyfile"
-echo "OK   $out/Caddyfile validates"
+okay "$out/Caddyfile validates"
 
 [ -z "$R" ] || { echo "TEST ROOT $R: files placed, commands logged, nothing started"; exit 0; }
 
