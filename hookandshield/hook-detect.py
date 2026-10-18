@@ -25,6 +25,7 @@ import errno
 import json
 import logging
 import os
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,51 @@ def setup_logging():
         logging.getLogger().addHandler(h)
 
 
+# A config file larger than this is not read; it is reported instead. Claude Code's own files are a few KB.
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+
+# Why a file at a watched path was not read: (description suffix, matched pattern).
+_NOT_READ = {
+    "symlink": ("a symlink: not followed, content not scanned", "symlink:not-followed"),
+    "fifo": ("a FIFO, not a regular file: not read", "not-a-regular-file"),
+    "socket": ("a socket, not a regular file: not read", "not-a-regular-file"),
+    "device": ("a device, not a regular file: not read", "not-a-regular-file"),
+    "directory": ("a directory, not a regular file: not read", "not-a-regular-file"),
+    "other": ("not a regular file: not read", "not-a-regular-file"),
+    "oversized": (f"over {MAX_CONFIG_BYTES} bytes: not read", "oversized"),
+}
+
+
+def _kind(mode: int) -> str:
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISCHR(mode) or stat.S_ISBLK(mode):
+        return "device"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    return "other"
+
+
+def _unscanned(ioc: dict, filepath: str, st: os.stat_result, note: str, pattern: str) -> dict:
+    """A finding for a watched path whose content was not scanned. Always high: Claude Code reads
+    what is there (or fails on it), and the scan could not."""
+    logging.warning(f"IOC FOUND (high): {filepath} — ['{pattern}']")
+    return {
+        "filepath": filepath,
+        "description": f"{ioc['description']} ({note})",
+        "matched_patterns": [pattern],
+        "severity": "high",
+        "sha256": "",
+        "baseline_status": "",
+        "file_size": st.st_size if stat.S_ISREG(st.st_mode) else 0,
+        "file_mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+    }
+
+
 def scan_directory(scan_dir: str) -> list[dict]:
     """Walk directory tree looking for IOC patterns."""
     findings = []
@@ -116,6 +162,7 @@ def scan_directory(scan_dir: str) -> list[dict]:
     # symlinked directory, and Claude Code (or an editor) follows one, so a linked config directory
     # is reported, not silently skipped: otherwise a hook behind ~/.claude -> elsewhere scans CLEAN.
     watched_dirs = {ioc["path_contains"] for ioc in IOC_PATTERNS}
+    visited = set()   # every watched path the walk reached, whatever it found there
 
     for root, dirs, files in os.walk(scan_dir):
         for d in dirs:
@@ -147,44 +194,44 @@ def scan_directory(scan_dir: str) -> list[dict]:
                 continue
 
             filepath = os.path.join(root, ioc["file"])
+            visited.add(filepath)
+            # What is at the path, without opening it: a FIFO, socket or device where a config file
+            # belongs is reported by its type and never opened (opening a device can act on it), and
+            # a symlink is reported, not followed. A socket used to fail open() with ENXIO and was
+            # counted unreadable instead (reviewer, 2026-10-13).
             try:
-                with hook_baselines.open_nofollow(filepath) as f:
-                    content = f.read(50000)  # cap at 50KB
-            except hook_baselines.NotRegularFile:
-                # A FIFO, device or socket where a config file belongs: never read, always reported.
-                findings.append({
-                    "filepath": filepath,
-                    "description": ioc["description"] + " (not a regular file: not read)",
-                    "matched_patterns": ["not-a-regular-file"],
-                    "severity": "high",
-                    "sha256": "",
-                    "baseline_status": "",
-                    "file_size": 0,
-                    "file_mtime": datetime.fromtimestamp(os.lstat(filepath).st_mtime, tz=timezone.utc).isoformat(),
-                })
-                logging.warning(f"IOC FOUND (high): {filepath} — ['not-a-regular-file']")
+                st = os.lstat(filepath)
+            except OSError:
+                skipped_unreadable += 1
                 continue
-            except (PermissionError, OSError) as e:
+            if not stat.S_ISREG(st.st_mode):
+                findings.append(_unscanned(ioc, filepath, st, *_NOT_READ[_kind(st.st_mode)]))
+                continue
+            try:
+                # Read once: the analysis and the baseline sha are both of these bytes (reviewer, 2026-10-13). The open
+                # still refuses a symlink or a non-regular file, in case the path changed since lstat.
+                with hook_baselines.open_nofollow(filepath, "rb") as f:
+                    raw = f.read(MAX_CONFIG_BYTES + 1)
+            except hook_baselines.NotRegularFile:
+                findings.append(_unscanned(ioc, filepath, st, *_NOT_READ["other"]))
+                continue
+            except OSError as e:
                 if e.errno == errno.ELOOP:
                     # A symlink where Claude Code reads its config. Root never follows it into another
                     # file, and Claude Code DOES follow it, so its content goes unscanned: that alone is
                     # a finding, or a hook hidden behind a link would scan CLEAN.
-                    findings.append({
-                        "filepath": filepath,
-                        "description": ioc["description"] + " (a symlink: not followed, content not scanned)",
-                        "matched_patterns": ["symlink:not-followed"],
-                        "severity": "high",
-                        "sha256": "",
-                        "baseline_status": "",
-                        "file_size": 0,
-                        "file_mtime": datetime.fromtimestamp(
-                            os.lstat(filepath).st_mtime, tz=timezone.utc
-                        ).isoformat(),
-                    })
-                    logging.warning(f"IOC FOUND (high): {filepath} — ['symlink:not-followed']")
+                    findings.append(_unscanned(ioc, filepath, st, *_NOT_READ["symlink"]))
+                    continue
+                if e.errno == errno.ENXIO:   # a socket swapped in after the lstat
+                    findings.append(_unscanned(ioc, filepath, st, *_NOT_READ["socket"]))
                     continue
                 skipped_unreadable += 1
                 continue
+            if len(raw) > MAX_CONFIG_BYTES:
+                findings.append(_unscanned(ioc, filepath, st, *_NOT_READ["oversized"]))
+                continue
+            # The analysers read text; a byte that isn't UTF-8 must not stop the scan.
+            content = raw.decode("utf-8", errors="replace")[:50000]  # analyse the first 50K characters
 
             severity = "high"       # default for substring-path alerts
             sha256 = ""
@@ -196,7 +243,7 @@ def scan_directory(scan_dir: str) -> list[dict]:
                 # signature swapped 2026-09-10 for the canonical-hash migration
                 # (see hook_baselines.yaml header).
                 try:
-                    bl = hook_baselines.check(filepath)
+                    bl = hook_baselines.check(filepath, data=raw)
                 except (PermissionError, OSError):
                     skipped_unreadable += 1
                     continue
@@ -261,6 +308,38 @@ def scan_directory(scan_dir: str) -> list[dict]:
                 ).isoformat(),
             })
             logging.warning(f"IOC FOUND ({severity}): {filepath} — {matched_patterns}")
+
+    # A file with a baseline row that the walk never reached as a file: deleted, or turned into a
+    # directory (os.walk lists that under dirs, so the loop above never sees it). Claude Code then
+    # runs without what the approved file held, so it is reported (reviewer, 2026-10-13).
+    top = scan_dir.rstrip("/") + "/"
+    for filepath in sorted(hook_baselines.paths()):
+        if not filepath.startswith(top) or filepath in visited:
+            continue
+        try:
+            st = os.lstat(filepath)
+        except FileNotFoundError:
+            logging.warning(f"IOC FOUND (high): {filepath} — ['baseline:absent']")
+            findings.append({
+                "filepath": filepath,
+                "description": "a config file with an approved baseline is gone: Claude Code runs without it",
+                "matched_patterns": ["baseline:absent"],
+                "severity": "high",
+                "sha256": "",
+                "baseline_status": "absent",
+                "file_size": 0,
+                "file_mtime": "",
+            })
+            continue
+        except OSError:
+            skipped_unreadable += 1
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            ioc = {"description": "a config file with an approved baseline"}
+            findings.append(_unscanned(ioc, filepath, st, *_NOT_READ[_kind(st.st_mode)]))
+        else:
+            # Reached only through a linked directory (reported above) or a pruned one.
+            logging.info(f"baseline row not reached by the walk: {filepath}")
 
     # Review note D denominator: log unreadable-skip count so "CLEAN" reads
     # against a real coverage number instead of silence. INFO log so cron

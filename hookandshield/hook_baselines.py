@@ -39,12 +39,16 @@ API:
     sha256_file(filepath) -> str
         streaming SHA-256 of raw file content (unchanged from v0)
 
-    canonical_sha256(filepath, canon) -> dict
+    canonical_sha256(filepath, canon, data=None) -> dict
         {sha, stripped, kept, note}
         canon="v1" applies the strip-list with type guards; anything else
         falls back to raw. Malformed JSON → raw sha + note "canon:unparseable".
+        Given `data`, every sha is of those bytes and the file is not opened.
 
-    check(filepath) -> dict
+    check(filepath, data=None) -> dict
+        Pass the bytes the caller already read and analysed, so the sha and
+        the analysis are of one read (reviewer, 2026-10-13: a second open let
+        a file flipped between two copies be read bad and hashed approved).
         {"status": "match"|"mismatch"|"missing",
          "entry": dict|None,
          "current_sha": str, "canon": str,
@@ -161,7 +165,7 @@ def sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
-def canonical_sha256(filepath: str, canon: str) -> dict:
+def canonical_sha256(filepath: str, canon: str, data: bytes | None = None) -> dict:
     """Compute the canonical sha per the given canon version.
 
     Returns dict with:
@@ -180,24 +184,26 @@ def canonical_sha256(filepath: str, canon: str) -> dict:
     Encoding is explicit utf-8 on the read (review note A hardening) so that
     a locale-coerced interpreter can never surprise this path.
     """
+    if data is None:
+        with open_nofollow(filepath, "rb") as f:
+            data = f.read()
+    raw_sha = hashlib.sha256(data).hexdigest()   # one read: every sha below is of these bytes
     if canon != "v1":
         # v0 or unknown → raw file hash; note names the mode.
         return {
-            "sha": sha256_file(filepath),
+            "sha": raw_sha,
             "stripped": [],
             "kept": [],
             "guard_failed": [],
             "note": "canon:raw",
         }
     try:
-        with open_nofollow(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    # ValueError catches both json.JSONDecodeError (its parent) and any
-    # UnicodeDecodeError raised despite encoding= being explicit (belt-and-
-    # braces per review note A). OSError/PermissionError as before.
-    except (ValueError, OSError):
+        data = json.loads(data.decode("utf-8"))
+    # ValueError catches both json.JSONDecodeError (its parent) and the
+    # UnicodeDecodeError of a file that isn't UTF-8 (review note A).
+    except ValueError:
         return {
-            "sha": sha256_file(filepath),
+            "sha": raw_sha,
             "stripped": [],
             "kept": [],
             "guard_failed": [],
@@ -205,7 +211,7 @@ def canonical_sha256(filepath: str, canon: str) -> dict:
         }
     if not isinstance(data, dict):
         return {
-            "sha": sha256_file(filepath),
+            "sha": raw_sha,
             "stripped": [],
             "kept": [],
             "guard_failed": [],
@@ -241,7 +247,7 @@ def canonical_sha256(filepath: str, canon: str) -> dict:
     }
 
 
-def check(filepath: str) -> dict:
+def check(filepath: str, data: bytes | None = None) -> dict:
     """Look up the entry for filepath and compute its sha per entry's canon.
 
     Signature changed from v0: no longer takes a precomputed sha, because
@@ -263,7 +269,7 @@ def check(filepath: str) -> dict:
     entry = _BASELINES.get(filepath)
     if entry is None:
         try:
-            current = sha256_file(filepath)
+            current = hashlib.sha256(data).hexdigest() if data is not None else sha256_file(filepath)
         except (PermissionError, OSError):
             current = ""
         return {
@@ -277,7 +283,7 @@ def check(filepath: str) -> dict:
             "note": "canon:raw",
         }
     canon = entry.get("canon") or "raw"
-    computed = canonical_sha256(filepath, canon)
+    computed = canonical_sha256(filepath, canon, data)
     status = "match" if entry.get("sha256") == computed["sha"] else "mismatch"
     return {
         "status": status,
@@ -289,6 +295,11 @@ def check(filepath: str) -> dict:
         "guard_failed": computed["guard_failed"],
         "note": computed["note"],
     }
+
+
+def paths() -> list[str]:
+    """Every file path that has a baseline row."""
+    return list(_BASELINES)
 
 
 def reload() -> int:

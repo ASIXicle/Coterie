@@ -31,7 +31,7 @@ sys.stdout.reconfigure(line_buffering=True)
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from sentence_transformers import SentenceTransformer
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -59,6 +59,15 @@ MEMORY_HOME = os.environ.get("MEMORY_HOME", "/var/lib/memory")
 # take any path, so with them on the MCP secret is a shell as this account. Off unless exactly
 # "1"; off, they are not registered and a client never sees them (2026-10-01, SECURITY.md).
 DEV_TOOLS = os.environ.get("MEMORY_DEV_TOOLS", "") == "1"
+# Agent identity (2026-10-04). Each agent has a
+# token of its own and comes in at /agent/mcp; this file lists "<agent> <sha256 of its token>" per
+# line (root-owned, read by this server; the tokens themselves are only in the agents' homes).
+# Unset or missing: no agent tokens, and the agent door refuses everyone (fails closed).
+AGENT_TOKENS_PATH = os.environ.get("MEMORY_AGENT_TOKENS", "").strip()
+# The secret-path door is the operator's. "off" closes it, so every caller needs a token.
+OPERATOR_DOOR = os.environ.get("MEMORY_OPERATOR_DOOR", "on").strip().lower() not in {"off", "0", "no"}
+# "1": a tool refuses a name that isn't its caller's. Otherwise mismatches are only logged.
+IDENTITY_ENFORCE = os.environ.get("MEMORY_IDENTITY_ENFORCE", "") == "1"
 # The model DIRECTORY itself (fetch-model.py prints it; the installer writes it here).
 EMBEDDING_MODEL = os.environ.get(
     "MEMORY_EMBEDDING_MODEL", os.path.join(SERVER_DIR, "models", "voyage-4-nano")
@@ -376,6 +385,146 @@ def make_id(content: str, timestamp: str) -> str:
 mcp = MCPServer("persMEM", version=SERVER_COMMIT[:12])
 
 
+# ---------------------------------------------------------------------------
+# Agent identity (2026-10-04)
+# ---------------------------------------------------------------------------
+# Until now every caller held the same secret path, so a tool's `agent`/`author`/`from_agent`
+# argument was only a claim. Two doors now lead into the one MCP app, and the door a request
+# came through says who is calling. Tools read it from the x-memory-caller header, which only
+# _IdentityDoors sets: any copy a client sends is removed first, on every path.
+AGENT_DOOR_PATH = "/agent/mcp"
+CALLER_HEADER = "x-memory-caller"
+_CALLER_HEADER_B = CALLER_HEADER.encode()
+_AGENT_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_TOKEN_CACHE: dict = {"stamp": None, "map": {}, "stat_error": None}
+
+
+def _agent_tokens() -> dict:
+    """sha256(token) hex -> agent, from MEMORY_AGENT_TOKENS. Re-read whenever the file changes, so
+    issuing or revoking a token needs no restart. Only names on the active roster count. No file,
+    or an unreadable one, means no agent tokens: the agent door then refuses everyone."""
+    if not AGENT_TOKENS_PATH:
+        return {}
+    try:
+        st = os.stat(AGENT_TOKENS_PATH)
+    except OSError as e:
+        # A missing file is the normal "no agent tokens" state. Anything else (a directory the server
+        # can't enter, say) is logged once per kind, so a door refusing everyone says why (reviewer, 2026-10-13).
+        if not isinstance(e, FileNotFoundError) and _TOKEN_CACHE["stat_error"] != type(e).__name__:
+            print(f"[persMEM] identity: can't stat {AGENT_TOKENS_PATH} ({type(e).__name__}); "
+                  "the agent door refuses everyone", flush=True)
+        _TOKEN_CACHE["stat_error"] = type(e).__name__
+        return {}
+    _TOKEN_CACHE["stat_error"] = None
+    stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+    if stamp != _TOKEN_CACHE["stamp"]:
+        found = {}
+        try:
+            with open(AGENT_TOKENS_PATH, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if (len(parts) != 2 or not _AGENT_NAME.fullmatch(parts[0])
+                            or not _SHA256_HEX.fullmatch(parts[1]) or parts[0] not in FLOCK_AGENTS):
+                        print(f"[persMEM] identity: {AGENT_TOKENS_PATH}:{n} ignored "
+                              "(want '<active agent> <sha256 hex>')", flush=True)
+                        continue
+                    found[parts[1]] = parts[0]
+        except OSError as e:
+            print(f"[persMEM] identity: {AGENT_TOKENS_PATH} unreadable ({type(e).__name__}); "
+                  "the agent door refuses everyone", flush=True)
+            found = {}
+        _TOKEN_CACHE.update(stamp=stamp, map=found)
+    return _TOKEN_CACHE["map"]
+
+
+async def _plain_response(send, status: int, body: bytes) -> None:
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
+class _IdentityDoors:
+    """ASGI layer in front of the MCP app.
+
+    /agent/mcp: an agent's door. Its bearer token must hash to a line in MEMORY_AGENT_TOKENS; the
+    request then goes to the MCP app at the operator path with x-memory-caller set to that agent.
+    No token, or one that isn't listed: 401, and the request goes no further.
+    /<secret>/mcp: the operator's door (caller "operator"). MEMORY_OPERATOR_DOOR=off closes it (404).
+    Everything else passes through, minus any client-sent x-memory-caller."""
+
+    def __init__(self, app, operator_path: str):
+        self.app = app
+        self.operator_path = operator_path
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != _CALLER_HEADER_B]
+        path = scope.get("path", "")
+        if path == AGENT_DOOR_PATH:
+            auth = next((v for k, v in headers if k.lower() == b"authorization"), b"")
+            token = auth[7:].strip() if auth[:7] == b"Bearer " else b""
+            agent = _agent_tokens().get(hashlib.sha256(token).hexdigest()) if token else None
+            if not agent:
+                return await _plain_response(send, 401, b'{"error": "agent door: missing or unknown token"}')
+            scope = dict(scope, path=self.operator_path, raw_path=self.operator_path.encode(),
+                         headers=headers + [(_CALLER_HEADER_B, agent.encode())])
+        elif path == self.operator_path:
+            if not OPERATOR_DOOR:
+                return await _plain_response(send, 404, b'{"error": "not found"}')
+            scope = dict(scope, headers=headers + [(_CALLER_HEADER_B, b"operator")])
+        else:
+            scope = dict(scope, headers=headers)
+        return await self.app(scope, receive, send)
+
+
+def _caller(ctx) -> Optional[str]:
+    """An agent's name (its token was checked at the agent door), "operator" (the secret-path
+    door), or None when there is no HTTP request behind the call (a direct call, a test)."""
+    if ctx is None:
+        return None
+    try:
+        headers = ctx.headers
+    except Exception:
+        return None
+    return headers.get(CALLER_HEADER) if headers else None
+
+
+def _claim(ctx, tool: str, claimed: str, refuse: bool = True) -> Optional[str]:
+    """Check the name a tool was given against its caller, and log it. Returns a refusal (JSON)
+    only when enforcing, the caller is an agent, and the name given is someone else's."""
+    who = _caller(ctx)
+    if who is None:
+        return None
+    claimed = (claimed or "").strip().lower()  # names are lowercase; amq_send lowercases its own later
+    # The argument is the caller's text, so it never reaches the journal unless it is a name (reviewer,
+    # 2026-10-13: a newline in it forged a second identity line). An invalid name can't equal an
+    # agent caller's own name (those passed _AGENT_NAME), so for an agent it is a mismatch anyway.
+    shown = claimed if not claimed or _AGENT_NAME.fullmatch(claimed) else "<invalid>"
+    match = who == "operator" or not claimed or claimed == who
+    refused = IDENTITY_ENFORCE and refuse and not match
+    tag = "" if match else (" MISMATCH" if refuse else " audit")  # refuse=False: naming another seat is allowed
+    print(f"[persMEM] identity: caller={who} tool={tool} claimed={shown or '-'}{tag}"
+          f"{' refused' if refused else ''}", flush=True)
+    if refused:
+        return json.dumps({"status": "error", "error": (
+            f"identity: this session is '{who}', so {tool} can't act as '{shown}'. Use your own name.")})
+    return None
+
+
+def _own(ctx, name: str) -> str:
+    """The name to act under: the caller's own when enforcing and none was given, else `name`."""
+    who = _caller(ctx)
+    if IDENTITY_ENFORCE and not (name or "").strip() and who and who != "operator":
+        return who
+    return name
+
+
 # uvicorn's access log (MCPServer.run() leaves access_log at its default, True) writes one request line
 # per MCP call, and every MCP path carries SECRET_PATH, so the journal held the secret on each
 # call until 2026-09-25. A filter on the logger survives uvicorn's dictConfig (it replaces the
@@ -401,6 +550,7 @@ async def memory_store(
     collection: str = DEFAULT_COLLECTION,
     supersedes: str = "",
     to_agent: str = "",
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Store a memory chunk in the vector database.
@@ -425,6 +575,7 @@ async def memory_store(
                   Must be an agent on the roster. Empty = every boot of the
                   handoff's project (the old behaviour).
     """
+    who = _caller(ctx)
     recipient, recipient_error = _handoff_recipient(memory_type, to_agent, FLOCK_AGENTS)
     if recipient_error:
         return json.dumps({"status": "error", "error": recipient_error})
@@ -463,6 +614,8 @@ async def memory_store(
         "superseded_by": "",
         "expires_at": "",
     }
+    if who and who != "operator":
+        metadata["author"] = who
     extras, head_answers = stored_extras(collection, embedding[0])
     metadata.update(extras)
     if recipient:
@@ -524,6 +677,7 @@ async def memory_retract(
     superseded_by: str = "",
     collection: str = DEFAULT_COLLECTION,
     author: str = "",
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Mark a memory as superseded/retracted. The memory stays in the
@@ -548,6 +702,10 @@ async def memory_retract(
         author: Which bird performed the retraction. MANDATORY for
                 bootstrap collection retracts. Ignored elsewhere.
     """
+    refused = _claim(ctx, "memory_retract", author)
+    if refused:
+        return refused
+    author = _own(ctx, author)
     coll = get_or_create_collection(collection)
 
     try:
@@ -1957,6 +2115,7 @@ async def amq_send(
     subject: str = "",
     kind: str = "message",
     priority: str = "normal",
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Send a message to another agent via AMQ (atomic Maildir delivery).
@@ -1974,6 +2133,9 @@ async def amq_send(
               review_response, observation, decision, status.
         priority: urgent, normal, or low.
     """
+    refused = _claim(ctx, "amq_send", from_agent)
+    if refused:
+        return refused
     from_agent = from_agent.lower().strip()
     to_agent = to_agent.lower().strip()
 
@@ -2058,6 +2220,7 @@ async def _amq_deliver(from_agent: str, to_agent: str, body: str, subject: str =
 @mcp.tool()
 async def amq_check(
     agent: str,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Check for new messages in an agent's AMQ inbox (non-destructive peek).
@@ -2068,6 +2231,9 @@ async def amq_check(
     Args:
         agent: Your agent name (must be on the AMQ roster).
     """
+    refused = _claim(ctx, "amq_check", agent)
+    if refused:
+        return refused
     agent = agent.lower().strip()
     if agent not in AMQ_AGENTS:
         return json.dumps({"error": f"unknown agent: {agent}"})
@@ -2107,6 +2273,7 @@ async def amq_check(
 async def amq_read(
     agent: str,
     msg_id: str,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Read a specific message and mark it as read (moves from new to cur).
@@ -2115,6 +2282,9 @@ async def amq_read(
         agent: Your agent name (must be on the AMQ roster).
         msg_id: The message ID to read (from amq_check results).
     """
+    refused = _claim(ctx, "amq_read", agent)
+    if refused:
+        return refused
     agent = agent.lower().strip()
     if agent not in AMQ_AGENTS:
         return json.dumps({"error": f"unknown agent: {agent}"})
@@ -2147,6 +2317,7 @@ async def amq_read(
 async def amq_history(
     agent: str,
     limit: int = 10,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     List recent messages (both read and unread) for context recovery.
@@ -2158,6 +2329,9 @@ async def amq_history(
         agent: Your agent name (must be on the AMQ roster).
         limit: Max messages to return (default 10).
     """
+    refused = _claim(ctx, "amq_history", agent)
+    if refused:
+        return refused
     agent = agent.lower().strip()
     if agent not in AMQ_AGENTS:
         return json.dumps({"error": f"unknown agent: {agent}"})
@@ -2695,6 +2869,7 @@ def _record_manifest_hash(agent: str, manifest_hash: str, kind: str, lane: str) 
 async def chorus_init(
     agent: str = "",
     project: str = "general",
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Bootstrap a Chorus session in one call. Returns pinned identity/directives
@@ -2717,6 +2892,10 @@ async def chorus_init(
                omit if identity-confused after compaction.
         project: Current project focus (e.g., 'general', 'website').
     """
+    refused = _claim(ctx, "chorus_init", agent)
+    if refused:
+        return refused
+    agent = _own(ctx, agent)
     agent = agent.lower().strip() if agent else ""
     result = {}
 
@@ -2852,6 +3031,7 @@ async def chorus_init(
 async def chorus_manifest(
     agent: str = "",
     project: str = "general",
+    ctx: Optional[Context] = None,
 ) -> str:
     """Return the boot manifest for `chorus_init(agent, project)` WITHOUT the
     payload documents. Cheap-to-audit summary of what a bird would boot on:
@@ -2875,6 +3055,7 @@ async def chorus_manifest(
                  from 2026-09-15). Default `"general"`. Pass
                  a lane name (e.g. `"ops"`) to see that lane's manifest.
     """
+    _claim(ctx, "chorus_manifest", agent, refuse=False)  # auditing another seat is allowed
     agent = agent.lower().strip() if agent else ""
     _, manifest_entries, boot_err = _build_bootstrap_and_manifest(agent, project)
     if boot_err is not None:
@@ -2893,6 +3074,7 @@ async def chorus_manifest(
 @mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def amq_timeline(
     limit: int = 20,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Shared AMQ view across all agents. Returns a flat timeline of
@@ -2905,6 +3087,9 @@ async def amq_timeline(
     Args:
         limit: Max messages to return (default 20, max 50).
     """
+    _claim(ctx, "amq_timeline", "", refuse=False)
+    who = _caller(ctx)
+    mine = who if (IDENTITY_ENFORCE and who and who != "operator") else None
     limit = max(1, min(50, limit))
     messages = []
 
@@ -2936,6 +3121,8 @@ async def amq_timeline(
                     "inbox": ag,
                 })
 
+    if mine:
+        messages = [m for m in messages if m["inbox"] == mine or m["from"] == mine]
     messages.sort(key=lambda m: m.get("created", ""), reverse=True)
     messages = messages[:limit]
 
@@ -3190,6 +3377,7 @@ async def bootstrap_update(
     reason: str = "",
     author: str = "",
     skip_history: bool = False,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Update a bootstrap collection entry, writing the previous version to
@@ -3232,6 +3420,10 @@ async def bootstrap_update(
                 skipped and metadata is marked history_skipped=True. Both
                 reason and author become required.
     """
+    refused = _claim(ctx, "bootstrap_update", author)
+    if refused:
+        return refused
+    author = _own(ctx, author)
     # Per-entry mutex spans the entire check-then-write
     # sequence so the `embed` await below does not straddle the read + upsert.
     # Without this, two callers from the same pre-image both pass the sha check,
@@ -3636,6 +3828,7 @@ async def bootstrap_patch(
     expected_stored_sha256: str,
     expected_after_sha256: str = "",
     tags: str = "",
+    ctx: Optional[Context] = None,
 ) -> str:
     """
     Diff-input endpoint for bootstrap entries. Eliminates the content-parameter
@@ -3658,6 +3851,10 @@ async def bootstrap_patch(
                 staged, reviewed after-image (caller-side discipline).
         tags: Empty = carry over unchanged; caller-supplied value replaces.
     """
+    refused = _claim(ctx, "bootstrap_patch", author)
+    if refused:
+        return refused
+    author = _own(ctx, author)
     # Required-field validation (no soft defaults on a new endpoint)
     if not author or not author.strip():
         return json.dumps({"status": "rejected", "reason_code": "missing_author",
@@ -4167,6 +4364,10 @@ if __name__ == "__main__":
     # loop="asyncio": uvicorn.run's default "auto" picks uvloop when importable, which run() (inside
     # anyio.run) never did; this keeps the loop the server has always run on.
     import uvicorn
-    app = mcp.streamable_http_app(streamable_http_path=f"/{SECRET_PATH}/mcp", host=HOST)
+    app = _IdentityDoors(mcp.streamable_http_app(streamable_http_path=f"/{SECRET_PATH}/mcp", host=HOST),
+                         f"/{SECRET_PATH}/mcp")
+    print(f"[persMEM] Doors: agent {AGENT_DOOR_PATH} ({len(_agent_tokens())} token(s) from "
+          f"{AGENT_TOKENS_PATH or 'MEMORY_AGENT_TOKENS unset'}); operator {'open' if OPERATOR_DOOR else 'CLOSED'}; "
+          f"identity {'ENFORCED' if IDENTITY_ENFORCE else 'logged only'}")
     uvicorn.run(app, host=HOST, port=PORT, log_level="info", loop="asyncio",
                 timeout_graceful_shutdown=SHUTDOWN_GRACE_S)

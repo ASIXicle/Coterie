@@ -38,8 +38,10 @@ word-bounded, exact-case tokens**: every rule must match at least one shipped fi
 fails (a dead rule means the code moved and the map did not), and the output is syntax-checked
 before it is committed, so a rename that breaks code fails the build rather than the reader.
 **Third-party files cross as vendored entries** that carry an owner, the upstream URL and a
-sha256 the build verifies; the lint scans them for site-fact shapes only, since a minified
-library cannot be reworded, and the owner answers for every hit that exemption allows. A file
+sha256 the build verifies; the lint's normal pass scans them for site-fact shapes only, since a
+minified library cannot be reworded, and the owner answers for every hit that exemption allows.
+The no-exclusion pass (item 1 of "What must be TRUE before a cut") reads them with every pattern, so a private word inside a
+vendored file still stops the cut. A file
 that a third-party tool generated from our own sources (a stylesheet built from our templates)
 is not third-party: we can reword it, so it crosses as `copy` under every rule. Nothing of ours
 is ever appended to a vendored file. v0.1.0 shipped one of our comments that way.
@@ -76,6 +78,15 @@ and the lint output in the sign-off note.
    `DENYLIST:` summary line names the file it read and the entry count. For the release
    repository the publish script goes further and accepts only the list whose sha256 is pinned
    on the working `main` (step 0 below), so a build linted under a synthetic list cannot reach it.
+   The build and the publish script then lint the same ref a second time with no exclusions:
+   vendored files get every pattern, no binary is waived, and the run is green only when its hits
+   are exactly one `binary-blob` per MANIFEST binary row. Its `NO-EXCLUSIONS:` line goes in the
+   sign-off note beside the first `CLEAN`. Neither pass waives a binary's metadata: PNG text and
+   EXIF chunks, JPEG metadata segments and font name tables are decoded and scanned, and a PNG
+   carrying any chunk outside `IHDR/PLTE/IDAT/IEND` fails. Most tools write `sRGB`, `gAMA` or
+   `pHYs` into a screenshot, so strip a new PNG down to those four chunks before adding its binary
+   row. The lint reads fonts through fontTools, and woff2 also needs brotli: install both where the
+   lint runs, or every font fails as `font-needs-fontTools-and-brotli`.
 2. Every commit on the built ref authored and committed under the project identity with
    UTC dates. The build does this; a hand commit on the ref is a defect.
 3. No transcripts, identities, calibration notes, private review artifacts or queue

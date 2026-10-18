@@ -251,6 +251,10 @@ front=$(cat "$front_file"); snippet=$(cat "$out/Caddyfile.portal")
     # use to load a new config (drop the allowlist, serve the CA's key). Nothing here needs it; the
     # cost is that a config change is `systemctl restart caddy`, not reload (adversarial pass, 2026-10-02).
     echo "	admin off"
+    # The allowlist's abort must come before the password check. Caddy's default order runs basicauth
+    # first, so an address outside the allowlist was asked for the password, and a right guess was then
+    # answered by a dropped connection: a password oracle from every excluded address (reviewer, 2026-10-13).
+    echo "	order abort before basicauth"
     if [ "$TLS_MODE" = internal ]; then
         # Caddy otherwise tries, at every start, to put its root into the system's trust store with
         # sudo; its account has no sudo rights, so each start mails root "*** SECURITY information
@@ -308,8 +312,20 @@ for u in $LIVE; do
         [ -S "$sock" ] && curl -fs -m 2 --unix-socket "$sock" -o /dev/null "http://localhost/term/$u/" && { up=1; break; }; sleep 1
     done
     gate=$(stat -c '%a %G' "$d" 2>/dev/null || true)   # the gate itself, not only that something answers
-    if [ "$up" = 1 ] && [ "$gate" = "2750 $PANE_PROXY_GROUP" ]; then echo "LIVE $u (pane on $sock; directory $gate)"
-    elif [ "$up" = 1 ]; then echo "DEAD $u: the pane answers, but $d is '$gate', not '2750 $PANE_PROXY_GROUP': any local account could reach it" >&2; fail=1
+    # the negative control: every other agent's account, and nobody, must NOT reach this pane. The
+    # mode check above can't see an ACL or a group added by hand; this can. An empty answer means
+    # the check itself could not run (no such account, no curl), which is not a pass either.
+    o=""; deny=000; n=0
+    for v in $LIVE nobody; do
+        [ "$v" = "$u" ] && continue
+        c=$(runuser -u "$v" -- curl -s -o /dev/null -w '%{http_code}' -m 2 --unix-socket "$sock" "http://localhost/term/$u/" 2>/dev/null || true)
+        n=$((n + 1))
+        [ "$c" = 000 ] || { o=$v; deny=$c; break; }
+    done
+    if [ "$up" = 1 ] && [ "$gate" = "2750 $PANE_PROXY_GROUP" ] && [ "$deny" = 000 ]; then echo "LIVE $u (pane on $sock; directory $gate; refused to $n other account(s))"
+    elif [ "$up" = 1 ] && [ "$gate" != "2750 $PANE_PROXY_GROUP" ]; then echo "DEAD $u: the pane answers, but $d is '$gate', not '2750 $PANE_PROXY_GROUP': any local account could reach it" >&2; fail=1
+    elif [ "$up" = 1 ] && [ -z "$deny" ]; then echo "DEAD $u: the refusal check could not run as $o (no such account, or no curl on its PATH) -- id $o; command -v curl" >&2; fail=1
+    elif [ "$up" = 1 ]; then echo "DEAD $u: $o reached the pane ('$deny'), though $d is $gate: an ACL or a group lets another account in -- getfacl $d; id $o" >&2; fail=1
     else echo "DEAD $u: no pane on $sock -- journalctl -u ttyd-$u -n 20 --no-pager" >&2; fail=1; fi
 done
 up=0

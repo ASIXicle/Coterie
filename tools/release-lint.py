@@ -4,6 +4,7 @@
 Usage:
   tools/release-lint.py --ref <ref> [--patterns <private patterns file>]
                         [--repo /path/to/repo] [--allow-binary PATH_REGEX]...
+                        [--vendor PATH_REGEX]... [--no-exclusions [--expect-binary PATH_REGEX]...]
 
 Exit 0 and print CLEAN when nothing matches; exit 1 with every hit otherwise.
 
@@ -27,6 +28,22 @@ are decoded (and inflated if gzip) and their text scanned; a decoded payload tha
 text is a hit. Any undecodable blob is a hit unless --allow-binary matches its path — the
 build passes the MANIFEST's `binary` entries, which each carry an owner.
 
+Binary metadata. A binary's bytes are not text, but its metadata is, and a waiver must never
+hide it: every binary, waived or not, has its metadata decoded and fed to both stages (the deny
+list, and every pattern whatever its scope). PNG: any chunk outside IHDR/PLTE/IDAT/IEND is a hit
+and its text and EXIF are decoded; the critical chunks are held to their shape (IHDR 13 bytes,
+PLTE read, IEND empty, IDAT one zlib stream with nothing after it, nothing after IEND). JPEG:
+every marker to EOI, APPn and COM read wherever they sit, nothing after EOI. Fonts (ttf, otf,
+woff, woff2): every name record and the printable runs of every table, read through fontTools
+(woff2 also needs brotli; both are this lint's requirements). Pixels and entropy-coded image data
+are not scanned. A binary of any other type, or one whose metadata fails to decode, is a hit:
+metadata that cannot be read cannot be cleared.
+
+No-exclusion pass (--no-exclusions, with --expect-binary once per MANIFEST binary row). The same
+scan with no vendor scope and no binary waiver: vendored files get every pattern, and the run is CLEAN only
+when its hits are exactly one `binary-blob` per expected row and nothing else. The build and
+publish scripts run it after the normal pass; a release records both lines.
+
 What it scans:
   tree     every blob at the ref, decoded as above, line by line; every path
   history  every commit: author, committer, date offsets (must be +0000), message
@@ -42,7 +59,7 @@ DENYLIST (second input, stricter contract; adversarial reviewer's constraints 20
   itself matches is printed as its listing index. Errors in this stage print a fixed line and
   withhold details, because a traceback could echo a matched string.
 """
-import argparse, base64, gzip, os, re, subprocess, sys, zlib
+import argparse, base64, gzip, io, os, re, subprocess, sys, zlib
 
 PROSE_EXT = (".md", ".txt", ".rst", ".html", ".htm", ".svg", ".svgz", ".pdf", ".mmd")
 
@@ -116,12 +133,139 @@ def decode_blob(path, blob):
             extras.append(("data-uri-opaque", ""))
     return text, extras, None
 
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+FONT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"wOFF", b"wOF2")
+
+def runs(data):
+    """Printable runs of 4+ characters, single-byte and UTF-16LE (EXIF's XP* tags are UTF-16)."""
+    one = [m.decode("latin-1") for m in re.findall(rb"[\x20-\x7e]{4,}", data)]
+    two = [m.decode("utf-16-le") for m in re.findall(rb"(?:[\x20-\x7e]\x00){4,}", data)]
+    return "\n".join(one + two)
+
+def png_meta(blob):
+    """Walk every chunk: IHDR is 13 bytes, PLTE at most 256 entries (its bytes are read), IEND
+    carries nothing, and the IDAT chunks hold one zlib stream with nothing after it. Any other
+    chunk is refused and its text decoded. The pixels themselves are not scanned."""
+    texts, bad, idat = [], [], []
+    i = 8
+    while True:
+        if i + 12 > len(blob):
+            bad.append("png-truncated")
+            break
+        n, t = int.from_bytes(blob[i:i + 4], "big"), blob[i + 4:i + 8]
+        data = blob[i + 8:i + 8 + n]
+        if len(data) != n:
+            bad.append("png-truncated")
+            break
+        i += 12 + n
+        if t == b"IEND":
+            if n:
+                bad.append("png-IEND-length")
+                texts.append(runs(data))
+            if i < len(blob):
+                bad.append("png-bytes-after-IEND")
+                texts.append(runs(blob[i:]))
+            break
+        if t == b"IHDR":
+            if n != 13:
+                bad.append("png-IHDR-length")
+        elif t == b"IDAT":
+            idat.append(data)
+        elif t == b"PLTE":
+            if n % 3 or n > 768:
+                bad.append("png-PLTE-length")
+            texts.append(runs(data))
+        else:
+            bad.append("png-chunk:" + t.decode("latin-1"))
+            key, _, rest = data.partition(b"\0")
+            try:
+                if t == b"zTXt":
+                    rest = zlib.decompress(rest[1:])
+                elif t == b"iTXt" and rest[:1] == b"\x01":
+                    head, _, body = rest[2:].partition(b"\0")
+                    tkey, _, body = body.partition(b"\0")
+                    rest = head + b" " + tkey + b" " + zlib.decompress(body)
+            except zlib.error:
+                bad.append("png-undecodable:" + t.decode("latin-1"))
+            texts.append(key.decode("latin-1") + "\n" + rest.decode("utf-8", "replace") + "\n" + runs(rest))
+    z, pending = zlib.decompressobj(), b"".join(idat)
+    try:
+        while pending and not z.eof:           # inflate in bounded steps; only the stream's end matters
+            z.decompress(pending, 1 << 20)
+            pending = z.unconsumed_tail
+        if not z.eof:
+            bad.append("png-IDAT-unterminated")
+        if z.unused_data:
+            bad.append("png-bytes-after-IDAT")
+            texts.append(runs(z.unused_data))
+    except zlib.error:
+        bad.append("png-IDAT-undecodable")
+    return texts, bad
+
+def jpeg_meta(blob):
+    """Walk every marker to EOI: fill bytes skipped, TEM/RSTn/SOI have no length, APPn and COM read
+    wherever they sit (between scans too), entropy-coded data stepped over, bytes after EOI refused."""
+    texts, bad = [], []
+    i = 2
+    while True:
+        if i >= len(blob):
+            bad.append("jpeg-no-EOI")
+            break
+        if blob[i] != 0xFF:
+            bad.append("jpeg-undecodable")
+            break
+        while i < len(blob) and blob[i] == 0xFF:
+            i += 1
+        if i >= len(blob):
+            bad.append("jpeg-undecodable")
+            break
+        m = blob[i]
+        i += 1
+        if m == 0xD9:
+            if i < len(blob):
+                bad.append("jpeg-bytes-after-EOI")
+                texts.append(runs(blob[i:]))
+            break
+        if m == 0x01 or 0xD0 <= m <= 0xD8:
+            continue
+        n = int.from_bytes(blob[i:i + 2], "big")
+        if i + 2 > len(blob) or n < 2 or i + n > len(blob):
+            bad.append("jpeg-truncated")
+            break
+        if 0xE0 <= m <= 0xEF or m == 0xFE:
+            texts.append(runs(blob[i + 2:i + n]))
+        i += n
+        if m == 0xDA:
+            while i < len(blob) and not (blob[i] == 0xFF and i + 1 < len(blob)
+                                         and blob[i + 1] != 0 and not 0xD0 <= blob[i + 1] <= 0xD7):
+                i += 1
+    return texts, bad
+
+def binary_meta(blob):
+    """Return (texts, refusals) for a binary blob: its metadata as text for both stages, and every
+    reason it fails closed (see "Binary metadata" in the module docstring)."""
+    if blob[:8] == PNG_SIG:
+        return png_meta(blob)
+    if blob[:2] == b"\xff\xd8":
+        return jpeg_meta(blob)
+    if blob[:4] not in FONT_MAGIC:
+        return [], ["unknown-type"]
+    try:
+        from fontTools.ttLib import TTFont
+        font = TTFont(io.BytesIO(blob), lazy=True)
+        texts = ["\n".join(r.toUnicode(errors="replace") for r in font["name"].names)]
+        return texts + [runs(font.reader[tag]) for tag in font.reader.keys()], []
+    except ImportError:
+        return [], ["font-needs-fontTools-and-brotli"]
+    except Exception:
+        return [], ["font-undecodable"]
+
 def scan_lines(text, pats, scope, where, kind, hits, builtin_only=False):
     for ln, line in enumerate(text.splitlines(), 1):
         for rx, tag, psc in pats:
             if builtin_only and not tag.startswith("builtin"):
                 continue
-            if psc != "all" and psc != scope:
+            if psc != "all" and psc != scope and scope != "meta":   # metadata gets every pattern
                 continue
             m = rx.search(line)
             if m:
@@ -158,6 +302,11 @@ def main():
                          "upstream sha): scanned with the built-in shapes only")
     ap.add_argument("--allow-binary", action="append", default=[],
                     help="path regex of blobs that may be non-text (the MANIFEST's binary entries)")
+    ap.add_argument("--no-exclusions", action="store_true",
+                    help="the no-exclusion pass: --vendor and --allow-binary are ignored, and CLEAN means "
+                         "the hits are exactly one binary-blob per --expect-binary and nothing else")
+    ap.add_argument("--expect-binary", action="append", default=[],
+                    help="with --no-exclusions: path regex of one MANIFEST binary row")
     ap.add_argument("--denylist", default=os.environ.get("RELEASE_DENYLIST"),
                     help="path of the external deny list (default $RELEASE_DENYLIST); required — "
                          "the lint fails closed without it")
@@ -166,8 +315,11 @@ def main():
 
     pats = [(re.compile(p, re.I | re.M), "builtin:" + tag, "all") for p, tag in BUILTIN]
     pats += [(re.compile(p, re.I | re.M), tag, sc) for p, tag, sc in load_patterns(a.patterns)]
-    allow_bin = [re.compile(x) for x in a.allow_binary]
-    vendor = [re.compile(x) for x in a.vendor]
+    expect = [re.compile(x) for x in a.expect_binary]
+    if expect and not a.no_exclusions:
+        sys.exit("--expect-binary belongs to the --no-exclusions pass")
+    allow_bin = [] if a.no_exclusions else [re.compile(x) for x in a.allow_binary]
+    vendor = [] if a.no_exclusions else [re.compile(x) for x in a.vendor]
     hits = []
 
     # --- tree
@@ -184,10 +336,17 @@ def main():
             continue
         nfiles += 1
         scope = "prose" if path.lower().endswith(PROSE_EXT) else "code"
-        text, extras, note = decode_blob(path, sh(a.repo, "cat-file", "-p", sha))
+        raw = sh(a.repo, "cat-file", "-p", sha)
+        text, extras, note = decode_blob(path, raw)
         if text is None:
             if not any(x.search(path) for x in allow_bin):
                 hits.append((path, "TREE", f"binary-blob({note})", "undecodable blob not a MANIFEST binary entry"))
+            meta, refused = binary_meta(raw)
+            for why in refused:
+                hits.append((path, "TREE", f"binary-meta({why})", "metadata refused or unreadable"))
+            for mtext in meta:
+                deny_texts.append(("TREE", path, mtext))
+                scan_lines(mtext, pats, "meta", path + "[meta]", "TREE", hits)
             continue
         deny_texts.append(("TREE", path, text))
         for _etag, _etext in extras:
@@ -230,6 +389,16 @@ def main():
     print(f"scanned ref={a.ref} files={nfiles} commits={ncommits} patterns={len(pats)}")
 
     deny_rc = denylist_stage(a.denylist, deny_texts)
+
+    if a.no_exclusions:
+        waived = [h for h in hits if h[2].startswith("binary-blob") and any(x.search(h[0]) for x in expect)]
+        per_row = [sum(1 for h in waived if x.search(h[0])) for x in expect]
+        hits = [h for h in hits if h not in waived]
+        print(f"NO-EXCLUSIONS: {len(waived)} binary-blob hit(s) for {len(expect)} MANIFEST binary row(s); "
+              f"{len(hits)} other hit(s)")
+        if any(n != 1 for n in per_row):
+            hits.append(("<rows>", "TREE", "binary-rows", "a binary row matched no blob, or more than one"))
+            print("NO-EXCLUSIONS: a binary row matched no blob, or more than one")
 
     if hits or deny_rc:
         print(f"DIRTY: {len(hits)} hit(s)" + ("" if not deny_rc else " + deny list (see DENYLIST lines)"))
