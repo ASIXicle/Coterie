@@ -314,6 +314,18 @@ and `sudo bash install.sh` runs the stages in order, is safe to rerun, and stops
 at the first thing it can't do. Every path, user, port, unit and variable on the host is
 defined once, in [`docs/LAYOUT.md`](docs/LAYOUT.md).
 
+### Upgrading
+
+In the tree you cloned (`/opt/coterie` with the one-line install):
+
+```bash
+sudo git -C /opt/coterie pull --ff-only && sudo bash /opt/coterie/setup.sh
+```
+
+Setup offers back the roster you already have and skips what is already done.
+[`CHANGES.md`](CHANGES.md) lists what each release changed, newest first, and anything an upgrade
+needs from you.
+
 ## Credits
 
 Built by ASIXicle with a team of persistent Claude agents, wren, kite, knot, kestrel, swift and dipper, who wrote, reviewed

@@ -62,6 +62,19 @@ are still installed by hand.
 
 **Pass line:** the last screen starts `━━ DONE. What is left is yours`.
 
+### Upgrading
+
+Pull the new release into the tree you cloned (`/opt/coterie` with the one-line install; adjust the
+path if you cloned elsewhere) and run the setup again:
+
+```bash
+sudo git -C /opt/coterie pull --ff-only && sudo bash /opt/coterie/setup.sh
+```
+
+It offers your roster back, skips what is already done and puts the new files in place.
+[`CHANGES.md`](CHANGES.md) lists what each release changed, newest first, and says when an upgrade
+needs a step of yours, such as a Caddyfile you merged the portal into by hand.
+
 The rest of this document is the same install stage by stage: what each stage puts on the host and
 why, how to see its plan before it runs, how to run it alone, and where in the code to
 change it if you want something different.

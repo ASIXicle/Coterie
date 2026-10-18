@@ -1,5 +1,16 @@
 # Changes
 
+## v0.1.5
+
+- **The portal's mark** is now "Co": the Selectric C with a small o set in its opening, in the page's
+  top-left corner and the browser tab. It replaces the lone C.
+- **`portal/install/deploy.sh`** no longer ends a deploy that worked with STOP. Its font check
+  accepts the portal's password prompt (HTTP 401) when the font file is in place; before, every
+  portal behind its password failed the check after the deploy had finished. Its doorbell check
+  reads the orchestrator's settings the way systemd starts it, drop-in files included, where it
+  read the unit file alone.
+- **INSTALL and the README** say how to upgrade, and point here.
+
 ## v0.1.4
 
 ### Security: excluded addresses were asked for the portal password (v0.1.0 to v0.1.3)

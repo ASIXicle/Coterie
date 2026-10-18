@@ -42,23 +42,38 @@ if [ ! -f "$site_env" ]; then
   echo "     cp install/site.env.example install/site.env and fill it in" >&2
   exit 1
 fi
+# --- doorbell guard
+# The mail root chorusd polls is the one systemd starts it with: the unit AND its drop-ins (a host may
+# set CHORUSD_AMQ_ROOT in a drop-in), so it is read from systemd, not from the unit file.
+unit_root=$(systemctl show "$(basename "$UNIT")" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^CHORUSD_AMQ_ROOT=//p' | tail -n 1)
+dark=""
 if [ -n "${AMQ_ROOT:-}" ]; then
-  if ! grep -qs "CHORUSD_AMQ_ROOT=$AMQ_ROOT" "$UNIT"; then
-    echo "STOP $UNIT does not carry CHORUSD_AMQ_ROOT=$AMQ_ROOT (site.env sets it); the running chorusd would poll nothing:" >&2
+  if [ "$unit_root" != "$AMQ_ROOT" ]; then
+    echo "STOP chorusd's unit, with its drop-ins, does not carry CHORUSD_AMQ_ROOT=$AMQ_ROOT (site.env sets it); the running chorusd would poll nothing:" >&2
     echo "     bash install/render-agents.sh && install -m 0644 build/chorusd.service $UNIT && systemctl daemon-reload" >&2
     exit 1
+  fi
+elif [ -n "$unit_root" ]; then
+  if [ -d "$unit_root" ]; then
+    echo "OK   site.env names no AMQ_ROOT; chorusd's unit sets CHORUSD_AMQ_ROOT=$unit_root"
+  else
+    dark="chorusd's unit sets CHORUSD_AMQ_ROOT=$unit_root, which does not exist"
   fi
 elif [ -d /var/lib/memory-amq ]; then
   # chorusd's own default (docs/LAYOUT.md): with no CHORUSD_AMQ_ROOT it polls this root directly,
   # as a member of the group that may list it. An empty AMQ_ROOT is the normal state there.
   echo "OK   site.env names no AMQ_ROOT: chorusd polls the layout's mail root, /var/lib/memory-amq"
 else
-  echo "WARN site.env sets no AMQ_ROOT/AMQ_USER and /var/lib/memory-amq does not exist: chorusd will run with the DOORBELL OFF (no maildir poll, no early-stop)." >&2
+  dark="site.env sets no AMQ_ROOT/AMQ_USER and /var/lib/memory-amq does not exist"
+fi
+if [ -n "$dark" ]; then
+  echo "WARN $dark: chorusd will run with the DOORBELL OFF (no maildir poll, no early-stop)." >&2
   if [ "${1:-}" != "--no-doorbell" ]; then
     echo "STOP re-run with --no-doorbell to deploy in that state on purpose." >&2
     exit 1
   fi
 fi
+# --- end doorbell guard
 # Guard (review, 2026-09-11): DEST must be where the running services READ from, or this copy is
 # a silent no-op: chorusd restarts on the old file and "LIVE chorusd" is reported anyway.
 CADDYFILE=${CADDYFILE:-/etc/caddy/Caddyfile}
@@ -181,10 +196,14 @@ curl -s "http://127.0.0.1:$CHORUSD_PORT/agents" && echo
 # ui-sans-serif, and only on the host that is missing the route, so the portal can look
 # perfect while the dashboard is wrong. Nobody would think to check it; check it here.
 FONT=archivo-latin.woff2
-probe() {  # $1 = label, $2 = url, $3 = hard|soft
+probe() {  # $1 = label, $2 = url, $3 = hard|soft, $4 = the font's file, for a surface behind a password
   code=$(curl -sk -o /dev/null -w '%{http_code}' -m 5 "$2" 2>/dev/null || echo 000)
   if [ "$code" = 200 ]; then
     echo "OK   $1 serves /fonts/$FONT"
+  elif [ "$code" = 401 ] && [ -n "${4:-}" ] && [ -f "$4" ]; then
+    # The portal asks for its password on /fonts/ too, so this unauthenticated probe gets 401: Caddy
+    # answers, and the file it serves from is in place.
+    echo "OK   $1 answers behind its password (HTTP 401), and $4 is in place"
   elif [ "$3" = hard ]; then
     echo "STOP $1 does not serve /fonts/$FONT (HTTP $code): tokens.css would fall back to the system font" >&2
     exit 1
@@ -193,6 +212,6 @@ probe() {  # $1 = label, $2 = url, $3 = hard|soft
     echo "     (the dashboard is optional and serves its own /fonts/ route; if it is installed, restart it after a pull)" >&2
   fi
 }
-probe "portal (https://${LAN_IP:-127.0.0.1})" "https://${LAN_IP:-127.0.0.1}/fonts/$FONT" hard
+probe "portal (https://${LAN_IP:-127.0.0.1})" "https://${LAN_IP:-127.0.0.1}/fonts/$FONT" hard "$DEST/portal/fonts/$FONT"
 probe "dashboard (127.0.0.1:${DASHBOARD_PORT:-8767})" "http://127.0.0.1:${DASHBOARD_PORT:-8767}/fonts/$FONT" soft
 echo "Done. Hard-refresh the portal (Ctrl+Shift+R)."
