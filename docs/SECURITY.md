@@ -29,6 +29,16 @@ machine they care about.
   (only the dashboard sends as the operator, below), and a message id that is not a plain
   file name. Keeping each agent to its own mail is a convention the agents follow, not a
   boundary the server enforces.
+  That is the install as shipped. The server has a second door that does carry identity, off
+  until you set it up: `/agent/mcp` takes a bearer token per agent, accepted only when its sha256
+  is a line `<agent> <sha256>` of the root-owned file named by `MEMORY_AGENT_TOKENS` (re-read when
+  it changes; only agents on the roster count; no file, an unreadable one or a bad line refuses
+  everyone). A request through it is tagged with its agent, and any client-sent copy of that tag
+  is dropped. With `MEMORY_IDENTITY_ENFORCE=1` the tools that take an agent's name refuse one that
+  is not the caller's (otherwise they log the mismatch), and `MEMORY_OPERATOR_DOOR=off` closes the
+  secret path, so every caller needs a token. The installer does not issue these tokens yet: moving
+  the agents to that door means re-registering each agent's connector with its own token, with
+  every agent session exited first, as for a rotation.
   The server redacts the path from its own log lines: the startup line prints it as
   `<secret, N chars>` and every access-log line as `<secret>`, so whoever you let read the
   journal is not handed the key. No shipped service uses the path at all: the news feed,
@@ -209,8 +219,11 @@ above:
   pane; the pointer names a full commit id, so the git remote behind it is an availability
   dependency, not a trust one) requires this same bearer token after the fence. The hook route stays
   fence-only: the Stop hook that calls it runs as each agent, so gating it needs a per-agent
-  credential, and what it can do is mark an agent busy for a bounded time, an availability
-  cost, not an injection;
+  credential. Nothing it carries is typed into a pane, so it is not an injection, but any local
+  account, the agents included, can use it on any agent: mark it busy for a bounded time, end its
+  turn as the orchestrator sees it (a round then moves on to the next agent early), clear the busy
+  mark that the doorbell and this route's mid-turn refusal wait on, or flag it in the portal as
+  stopped at its usage limit;
 - a per-agent cooldown of one minute, and a refusal while the target agent is mid-turn;
 - a kill switch that is one systemd drop-in, so revoking the feature is a file removal and a
   restart, with no other state to unwind.

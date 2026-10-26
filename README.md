@@ -355,10 +355,11 @@ under its own license; nothing here changes those terms.
 - [Caddy](https://caddyserver.com) (Apache-2.0), [ttyd](https://github.com/tsl0922/ttyd) by
   tsl0922 (MIT) with [xterm.js](https://xtermjs.org) (MIT), and
   [tmux](https://github.com/tmux/tmux) (ISC).
-- The fonts [Archivo](https://github.com/Omnibus-Type/Archivo) (The Archivo Project Authors)
-  and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (The JetBrains Mono Project
-  Authors), both under the SIL Open Font License 1.1; their license files ship beside them in
-  `portal/portal/fonts/`.
+- The fonts [Archivo](https://github.com/Omnibus-Type/Archivo) (The Archivo Project Authors),
+  [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (The JetBrains Mono Project
+  Authors) and, in the agent panes, [Commit Mono](https://github.com/eigilnikolajsen/commit-mono)
+  (the Commit Mono authors; its 600 and 700 weights, with TrueType outlines), all under the SIL Open
+  Font License 1.1; their license files ship beside them in `portal/portal/fonts/`.
 
 **The git server for the boot prompts**
 - [Forgejo](https://forgejo.org) (GPL v3), downloaded at install from Forgejo's own releases

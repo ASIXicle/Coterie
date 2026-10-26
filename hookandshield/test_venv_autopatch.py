@@ -121,6 +121,368 @@ class WheelsAndRequirements(unittest.TestCase):
         self.assertEqual(line.count("--hash=sha256:"), len(ws))
 
 
+def pkg(name, ver, why=""):
+    return {"name": name, "version": ver, "from_pypi": not why, "why": why, "public": None}
+
+
+# aiohttp 3.14.4's Requires-Dist as PyPI records it; markers and extras included.
+AIOHTTP_3_14_4 = [
+    'aiohappyeyeballs>=2.5.0', 'aiosignal>=1.4.0', 'async-timeout<6.0,>=4.0; python_version < "3.11"',
+    'attrs>=17.3.0', 'frozenlist>=1.1.1', 'multidict<7.0,>=4.5', 'propcache>=0.2.0',
+    'typing_extensions>=4.4; python_version < "3.13"', 'yarl<2.0,>=1.25.1',
+    'aiodns>=3.3.0; (sys_platform != "android" and sys_platform != "ios") and extra == "speedups"',
+    'Brotli>=1.2; (platform_python_implementation == "CPython" and sys_platform != "android" and '
+    'sys_platform != "ios") and extra == "speedups"']
+YARL_1_25_1 = ['idna>=2.0', 'multidict>=4.0', 'propcache>=0.2.1']
+
+
+class DependencyUpgrades(unittest.TestCase):
+    """aiohttp 3.14.4 needs yarl >= 1.25.1, and the tool installs with --no-deps, so against yarl 1.24.5
+    it failed its rehearsal. The upgrade a fix needs now travels with it, under the same rules."""
+
+    def setUp(self):
+        self.cfg = {"cooldown_days": 7}
+        self.v = {"holds": {}}
+        self.led = {"failed": {}, "user_managed": {}}
+        # A venv with yarl 1.24.5 (the parts aiohttp needs), plus the two only older Pythons need.
+        self.live = {canon: pkg(name, ver) for canon, name, ver in [
+            ("aiohttp", "aiohttp", "3.14.3"), ("yarl", "yarl", "1.24.5"), ("multidict", "multidict", "6.9.1"),
+            ("propcache", "propcache", "0.5.2"), ("idna", "idna", "3.19"), ("aiosignal", "aiosignal", "1.4.0"),
+            ("aiohappyeyeballs", "aiohappyeyeballs", "2.6.1"), ("attrs", "attrs", "25.4.0"),
+            ("frozenlist", "frozenlist", "1.8.0"), ("typing-extensions", "typing_extensions", "4.15.0"),
+            ("async-timeout", "async-timeout", "5.0.1")]}
+        self.requires = {("aiohttp", "3.14.4"): AIOHTTP_3_14_4, ("yarl", "1.25.1"): YARL_1_25_1,
+                         ("yarl", "1.25.3"): YARL_1_25_1, ("yarl", "1.26.0"): YARL_1_25_1, ("multidict", "6.10.0"): []}
+        self.releases = {"yarl": {"1.24.5": [wheel("yarl", "1.24.5", 99)], "1.25.1": [wheel("yarl", "1.25.1", 36)],
+                                  "1.25.3": [wheel("yarl", "1.25.3", 20)],
+                                  "1.26.0": [wheel("yarl", "1.26.0", 2)], "2.0.0": [wheel("yarl", "2.0.0", 30)]},
+                         "multidict": {"6.9.1": [wheel("multidict", "6.9.1", 99)],
+                                       "6.10.0": [wheel("multidict", "6.10.0", 20)]},
+                         "idna": {"2.10": [wheel("idna", "2.10", 900)], "3.19": [wheel("idna", "3.19", 99)]}}
+
+    def deps(self, name="aiohttp", ver="3.14.4"):
+        return va.dependency_upgrades(self.cfg, self.v, self.led, self.live, name, ver, NOW,
+                                      requires_of=lambda n, v: self.requires[(n, v)],
+                                      releases_of=lambda n: self.releases[n])
+
+    def test_the_cad_case_brings_the_oldest_yarl_that_satisfies_it(self):
+        deps, why = self.deps()
+        self.assertEqual(why, "")
+        self.assertEqual([(d["name"], d["from"], d["to"], d["for"]) for d in deps],
+                         [("yarl", "1.24.5", "1.25.1", "aiohttp 3.14.4")])   # not 1.26.0 (cool-down) or 2.0.0
+        self.assertEqual(deps[0]["old_wheels"][0]["filename"], "yarl-1.24.5-py3-none-any.whl")
+
+    def test_a_satisfied_venv_needs_nothing(self):
+        self.live["yarl"] = pkg("yarl", "1.25.1")   # a venv that already has it takes aiohttp 3.14.4 as it is
+        self.assertEqual(self.deps(), ([], ""))
+
+    def test_markers_and_extras_that_dont_apply_are_left_out(self):
+        del self.live["async-timeout"]              # needed below Python 3.11 only
+        if sys.version_info >= (3, 13):
+            del self.live["typing-extensions"]      # needed below 3.13 only
+        deps, why = self.deps()                     # aiodns and Brotli are extras: never installed here
+        self.assertEqual((len(deps), why), (1, ""))
+
+    def test_the_upgrades_are_followed_through_their_own_requirements(self):
+        self.requires[("yarl", "1.25.1")] = ['idna>=2.0', 'multidict>=6.10', 'propcache>=0.2.1']
+        deps, why = self.deps()
+        self.assertEqual(why, "")
+        self.assertEqual([(d["name"], d["to"], d["for"]) for d in deps],
+                         [("yarl", "1.25.1", "aiohttp 3.14.4"), ("multidict", "6.10.0", "yarl 1.25.1")])
+
+    def test_what_is_reported_instead(self):
+        cases = [
+            (lambda: self.requires.__setitem__(("aiohttp", "3.14.4"), AIOHTTP_3_14_4 + ["newdep>=1"]),
+             "isn't installed here"),
+            (lambda: self.v["holds"].__setitem__("yarl", "pinned by hand"), "held in the config: pinned by hand"),
+            (lambda: self.led["user_managed"].__setitem__("yarl", "changed outside this tool"), "user-managed"),
+            (lambda: self.live.__setitem__("yarl", pkg("yarl", "1.24.5", why="installed from file:///src")),
+             "yarl is installed from file:///src"),
+            # Only 1.25.1 is in the major and it is in the cool-down; 2.0.0 is out of it and satisfies an
+            # unbounded requirement, but is never taken.
+            (lambda: (self.releases.__setitem__("yarl", {"1.24.5": [wheel("yarl", "1.24.5", 99)],
+                                                         "1.25.1": [wheel("yarl", "1.25.1", 3)],
+                                                         "2.0.0": [wheel("yarl", "2.0.0", 30)]}),
+                      self.requires.__setitem__(("aiohttp", "3.14.4"), ["yarl>=1.25.1"])), "days old"),
+            (lambda: self.requires.__setitem__(("aiohttp", "3.14.4"), ["yarl>=2.0"]), "new major"),
+            (lambda: self.requires.__setitem__(("aiohttp", "3.14.4"), ["idna<3"]), "downgrade"),
+            (lambda: self.releases["yarl"].__setitem__("1.24.5", [sdist("yarl", "1.24.5", 99)]), "roll back"),
+            (lambda: self.requires.__setitem__(("aiohttp", "3.14.4"), ["yarl>=1.25.1 ; nonsense ="]),
+             "could not read aiohttp 3.14.4's requirements"),
+            (lambda: self.requires.__setitem__(("yarl", "1.25.1"), ["aiohttp<3.14.4"]),   # 3.14.3 would do
+             "already moves aiohttp to 3.14.4"),
+        ]
+        for change, why in cases:
+            self.setUp()
+            change()
+            deps, got = self.deps()
+            self.assertIsNone(deps, why)
+            self.assertIn(why, got)
+
+    def test_a_dependency_that_failed_here_is_skipped(self):
+        self.releases["yarl"]["1.25.2"] = [wheel("yarl", "1.25.2", 20)]
+        self.requires[("yarl", "1.25.2")] = YARL_1_25_1
+        self.led["failed"]["yarl"] = {"1.25.1": "failed its rehearsal twice"}
+        deps, _ = self.deps()
+        self.assertEqual(deps[0]["to"], "1.25.2")
+
+    def test_the_batch_installs_and_rolls_back_the_upgrade_with_the_fix(self):
+        deps, _ = self.deps()
+        p = {"key": "aiohttp", "name": "aiohttp", "from": "3.14.3", "to": "3.14.4", "ids": "X-1",
+             "wheels": va.compatible_wheels([wheel("aiohttp", "3.14.4", 16)]),
+             "old_wheels": va.compatible_wheels([wheel("aiohttp", "3.14.3", 99)]), "deps": deps}
+        up, down = va.req_lines([p], "to"), va.req_lines([p], "from")
+        self.assertEqual([l.split()[0] for l in up.splitlines()], ["aiohttp==3.14.4", "yarl==1.25.1"])
+        self.assertEqual([l.split()[0] for l in down.splitlines()], ["aiohttp==3.14.3", "yarl==1.24.5"])
+        self.assertEqual(va.names_of([p]), "aiohttp 3.14.3 -> 3.14.4 (with yarl 1.24.5 -> 1.25.1)")
+
+    def test_one_version_of_each_package_per_batch(self):
+        def pick(name, to, deps=()):
+            return {"key": name, "name": name, "from": "0", "to": to, "deps": [
+                {"key": n, "name": n, "from": "0", "to": t} for n, t in deps]}
+        a = pick("aiohttp", "3.14.4", [("yarl", "1.25.1")])
+        same = pick("yarl", "1.25.1")                     # yarl's own fix, at the version aiohttp needs
+        other = pick("yarl", "1.26.0")
+        b = pick("b", "2.0", [("yarl", "1.26.0")])
+        kept, waiting = va.one_version_each([a, same, other, b])
+        self.assertEqual([p["name"] for p in kept], ["aiohttp", "yarl"])
+        self.assertEqual(len(waiting), 2)
+        self.assertIn("waits for the next run", waiting[0])
+        self.assertEqual([m["name"] for m in va.members(kept)], ["aiohttp", "yarl"])   # yarl once
+        with self.assertRaises(va.Fail):
+            va.members([a, other])
+
+    def test_plan_wires_it_in(self):
+        src = (HERE / "venv-autopatch.py").read_text()
+        self.assertIn('deps, why = dependency_upgrades(cfg, v, led, live, d["name"], ver, now)', src)
+        self.assertIn('"wheels": wheels, "old_wheels": old_wheels, "deps": deps})', src)
+        dedup = src.index("picks, waiting = one_version_each(ready)")
+        audit = src.index('clean = audit(cfg, {m["name"]: m["to"] for p in picks for m in members([p])})')
+        self.assertLess(dedup, audit, "the audit must see one version of each package")
+
+
+# The memory venv's opentelemetry family on 2026-10-25, Requires-Dist as installed and as PyPI records
+# them (2026-10-26). api 1.45.1 fixes GHSA-xcq7-p3pf-p88h; sdk and semantic-conventions pin api exactly.
+OTEL_INSTALLED = [
+    ("opentelemetry-api", "1.45.0", []),
+    ("opentelemetry-sdk", "1.45.0", ["opentelemetry-api==1.45.0", "opentelemetry-semantic-conventions==0.66b0",
+                                     "opentelemetry-configuration==0.66b0; extra == 'file-configuration'"]),
+    ("opentelemetry-semantic-conventions", "0.66b0", ["opentelemetry-api==1.45.0"]),
+    ("opentelemetry-exporter-otlp-common", "0.66b0", ["opentelemetry-sdk~=1.45.0"]),
+    ("opentelemetry-exporter-otlp-proto-grpc", "1.45.0", [
+        "opentelemetry-api~=1.15", "opentelemetry-exporter-otlp-common==0.66b0", "opentelemetry-sdk~=1.45.0",
+        "opentelemetry-exporter-credential-provider-gcp>=0.59b0; extra == 'gcp-auth'"]),
+]
+OTEL_PYPI = {("opentelemetry-api", "1.45.1"): [], ("opentelemetry-api", "1.45.2"): [],
+             ("opentelemetry-sdk", "1.45.1"): ["opentelemetry-api==1.45.1", "opentelemetry-semantic-conventions==0.66b1"],
+             ("opentelemetry-sdk", "1.45.2"): ["opentelemetry-api==1.45.2", "opentelemetry-semantic-conventions==0.66b2"],
+             ("opentelemetry-semantic-conventions", "0.66b1"): ["opentelemetry-api==1.45.1"],
+             ("opentelemetry-semantic-conventions", "0.66b2"): ["opentelemetry-api==1.45.2"]}
+
+
+class SiblingPins(unittest.TestCase):
+    """opentelemetry-api 1.45.1 failed its rehearsal on 2026-10-25: opentelemetry-sdk and
+    -semantic-conventions 1.45.0/0.66b0 pin api==1.45.0, and nothing moved them. A package that pins one the
+    batch moves now moves with it, as its oldest release that accepts the batch."""
+
+    def setUp(self):
+        self.cfg = {"cooldown_days": 7}
+        self.v = {"holds": {}}
+        self.led = {"failed": {}, "user_managed": {}}
+        self.live = {va.canonicalize_name(n): dict(pkg(n, ver), requires=list(req)) for n, ver, req in OTEL_INSTALLED}
+        self.requires = dict(OTEL_PYPI)
+        self.releases = {
+            "opentelemetry-sdk": {"1.45.0": [wheel("opentelemetry_sdk", "1.45.0", 31)],
+                                  "1.45.1": [wheel("opentelemetry_sdk", "1.45.1", 20)],
+                                  "1.45.2": [wheel("opentelemetry_sdk", "1.45.2", 10)],
+                                  "1.46.0.dev1": [wheel("opentelemetry_sdk", "1.46.0.dev1", 9)]},
+            "opentelemetry-semantic-conventions": {
+                "0.66b0": [wheel("opentelemetry_semantic_conventions", "0.66b0", 31)],
+                "0.66b1": [wheel("opentelemetry_semantic_conventions", "0.66b1", 20)],
+                "0.66b2": [wheel("opentelemetry_semantic_conventions", "0.66b2", 10)]}}
+
+    def deps(self, ver="1.45.1"):
+        return va.dependency_upgrades(self.cfg, self.v, self.led, self.live, "opentelemetry-api", ver, NOW,
+                                      requires_of=lambda n, v: self.requires[(n, v)],
+                                      releases_of=lambda n: self.releases[n])
+
+    def test_the_memory_case_carries_sdk_and_semantic_conventions(self):
+        deps, why = self.deps()
+        self.assertEqual(why, "")
+        self.assertEqual([(d["name"], d["from"], d["to"], d["for"]) for d in deps], [
+            ("opentelemetry-sdk", "1.45.0", "1.45.1", "opentelemetry-api 1.45.1"),
+            ("opentelemetry-semantic-conventions", "0.66b0", "0.66b1", "opentelemetry-sdk 1.45.1")])
+        # The exporters' ~=1.45.0 accepts sdk 1.45.1, so they stay; the extras' pins never count.
+        self.assertEqual(va.pins_against(self.live, {"opentelemetry-api": "1.45.1", "opentelemetry-sdk": "1.45.1",
+                                                     "opentelemetry-semantic-conventions": "0.66b1"}), [])
+
+    def test_the_oldest_release_that_accepts_the_batch(self):
+        deps, why = self.deps("1.45.2")          # 1.45.1 of each pins api 1.45.1, so 1.45.2 of each
+        self.assertEqual(why, "")
+        self.assertEqual([(d["name"], d["to"]) for d in deps], [("opentelemetry-sdk", "1.45.2"),
+                                                               ("opentelemetry-semantic-conventions", "0.66b2")])
+        # Two releases accept api 1.45.1: the older one moves.
+        self.releases["opentelemetry-sdk"]["1.45.3"] = [wheel("opentelemetry_sdk", "1.45.3", 8)]
+        self.requires[("opentelemetry-sdk", "1.45.3")] = ["opentelemetry-api>=1.45.1",
+                                                          "opentelemetry-semantic-conventions==0.66b1"]
+        self.assertEqual(self.deps()[0][0]["to"], "1.45.1")
+
+    def test_what_is_reported_instead(self):
+        sdk = "opentelemetry-sdk"
+        cases = [
+            (lambda: self.v["holds"].__setitem__(sdk, "pinned by hand"), "held in the config: pinned by hand"),
+            (lambda: self.led["user_managed"].__setitem__(sdk, "changed outside this tool"), "user-managed"),
+            (lambda: self.live.__setitem__(sdk, dict(self.live[sdk], from_pypi=False, why="installed from file:///s")),
+             "opentelemetry-sdk is installed from file:///s"),
+            (lambda: self.releases[sdk].__setitem__("1.45.1", [wheel("opentelemetry_sdk", "1.45.1", 3)]),
+             "opentelemetry-sdk 1.45.0 pins opentelemetry-api==1.45.0, which this fix moves to 1.45.1"),
+            (lambda: self.requires.__setitem__((sdk, "1.45.1"), ["opentelemetry-api==1.45.2"]), "needs opentelemetry-api"),
+            (lambda: self.releases[sdk].__setitem__("1.45.0", [sdist("opentelemetry_sdk", "1.45.0", 31)]), "roll back"),
+            (lambda: self.requires.__setitem__((sdk, "1.45.1"), ["opentelemetry-api==1.45.1 ; nonsense ="]),
+             "could not read opentelemetry-sdk's requirements"),
+            (lambda: self.live.__setitem__("pinner", dict(pkg("pinner", "2.0"), requires=["opentelemetry-api<1.45.1"])),
+             "pinner 2.0 pins opentelemetry-api<1.45.1"),        # no release of pinner on PyPI
+        ]
+        for change, why in cases:
+            self.setUp()
+            self.releases.setdefault("pinner", {"2.0": [wheel("pinner", "2.0", 99)]})
+            change()
+            deps, got = self.deps()
+            self.assertIsNone(deps, why)
+            self.assertIn(why, got)
+
+    def test_a_pin_the_batch_does_not_touch_is_left_to_pip_check(self):
+        # Already broken before the fix (pip check's baseline), or unreadable: not this fix's business.
+        self.live["other"] = dict(pkg("other", "1.0"), requires=["idna<2", "bad line ;;; ="])
+        self.assertEqual(va.pins_against(self.live, {"opentelemetry-api": "1.45.0"}), [])
+        self.assertEqual(self.deps()[1], "")
+        # A pin behind an extra doesn't count (pip check leaves extras out); a beta the batch moves to
+        # satisfies a range that names no pre-release.
+        self.live["other"]["requires"] = ["opentelemetry-api==1.45.0; extra == 'otel'",
+                                          "opentelemetry-semantic-conventions<1"]
+        self.assertEqual(va.pins_against({"other": self.live["other"]}, {"opentelemetry-api": "1.45.1",
+                                                                         "opentelemetry-semantic-conventions": "0.66b1"}), [])
+
+    def test_a_carry_that_needs_a_carry(self):
+        # sdk 1.45.1 moves; the exporter pins sdk exactly, so it moves too; grpc pins the exporter exactly
+        # (as installed), so grpc moves after it.
+        exp, grpc = "opentelemetry-exporter-otlp-common", "opentelemetry-exporter-otlp-proto-grpc"
+        self.live[exp]["requires"] = ["opentelemetry-sdk==1.45.0"]
+        self.releases[exp] = {"0.66b0": [wheel("x", "0.66b0", 31)], "0.66b1": [wheel("x", "0.66b1", 20)]}
+        self.requires[(exp, "0.66b1")] = ["opentelemetry-sdk==1.45.1"]
+        self.releases[grpc] = {"1.45.0": [wheel("g", "1.45.0", 31)], "1.45.1": [wheel("g", "1.45.1", 20)]}
+        self.requires[(grpc, "1.45.1")] = ["opentelemetry-api~=1.15", "opentelemetry-exporter-otlp-common==0.66b1",
+                                           "opentelemetry-sdk~=1.45.1"]
+        deps, why = self.deps()
+        self.assertEqual(why, "")
+        self.assertEqual([(d["name"], d["for"]) for d in deps], [
+            ("opentelemetry-sdk", "opentelemetry-api 1.45.1"),
+            ("opentelemetry-semantic-conventions", "opentelemetry-sdk 1.45.1"),
+            (exp, "opentelemetry-sdk 1.45.1"), (grpc, f"{exp} 0.66b1")])
+
+    def test_each_release_is_read_once(self):
+        calls = []
+        va.dependency_upgrades(self.cfg, self.v, self.led, self.live, "opentelemetry-api", "1.45.1", NOW,
+                               requires_of=lambda n, v: calls.append((n, v)) or self.requires[(n, v)],
+                               releases_of=lambda n: self.releases[n])
+        self.assertEqual(len(calls), len(set(calls)), calls)   # sdk 1.45.1 was read by the carry and the queue
+
+    def test_a_members_bound_against_a_later_move_is_reported(self):
+        # 2026-10-26: x 2.0 needs y<2.9 (met when x is queued); w pins x==1.0, so w moves to 1.1,
+        # which needs y>=2.9, so y moves. x 2.0's bound is broken by then: a plan line, not a rehearsal strike.
+        live = {"x": dict(pkg("x", "1.0"), requires=["y<2.9"]), "y": pkg("y", "2.5"),
+                "w": dict(pkg("w", "1.0"), requires=["x==1.0"])}
+        req = {("x", "2.0"): ["y<2.9"], ("w", "1.1"): ["x>=2.0", "y>=2.9"], ("y", "2.9"): []}
+        rels = {n: {ver: [wheel(n, ver, 30)] for ver in vs} for n, vs in
+                {"x": ("1.0", "2.0"), "y": ("2.5", "2.9"), "w": ("1.0", "1.1")}.items()}
+        deps, why = va.dependency_upgrades(self.cfg, self.v, self.led, live, "x", "2.0", NOW,
+                                           requires_of=lambda n, v: req[(n, v)], releases_of=lambda n: rels[n])
+        self.assertIsNone(deps)
+        self.assertEqual(why, "x 2.0 needs y<2.9, but this fix moves y to 2.9")
+
+    def test_two_advisories_in_one_family_are_not_stuck(self):
+        # 2026-10-26: advisory A on api < 1.45.1, B on sdk < 1.45.2. A's carry takes sdk to 1.45.1,
+        # B (sdk to 1.45.2) waits for A, the audit drops A for its carry's own advisory, and every week neither
+        # applies. A dropped pick frees what it moved, so B is planned against the batch again, and fixes both.
+        canon = va.canonicalize_name
+        rels = {n: {ver: [wheel(n.replace("-", "_"), ver, 30)] for ver in vs} for n, vs in {
+            "opentelemetry-api": ("1.45.0", "1.45.1", "1.45.2"), "opentelemetry-sdk": ("1.45.0", "1.45.1", "1.45.2"),
+            "opentelemetry-semantic-conventions": ("0.66b0", "0.66b1", "0.66b2")}.items()}
+        live = {k: v for k, v in self.live.items() if k in rels}
+
+        def audit(cfg, pins):
+            out = {}
+            for n, ver in pins.items():
+                if canon(n) == "opentelemetry-api" and va.Version(ver) < va.Version("1.45.1"):
+                    out[canon(n)] = [{"id": "GHSA-A", "fix_versions": ["1.45.1"]}]
+                if canon(n) == "opentelemetry-sdk" and va.Version(ver) < va.Version("1.45.2"):
+                    out[canon(n)] = [{"id": "GHSA-B", "fix_versions": ["1.45.2"]}]
+            return out
+        stubs = {"check_interpreter": lambda p: None, "inspect_venv": lambda c, p: live, "audit": audit,
+                 "load_ledger": lambda c, n: {"freeze": None, "user_managed": {}, "failed": {}, "history": []},
+                 "pypi_releases": lambda n: rels[n], "pypi_requires": lambda n, v: self.requires[(n, v)]}
+        for k, f in stubs.items():
+            self.addCleanup(setattr, va, k, getattr(va, k))
+            setattr(va, k, f)
+        pl = va.plan_venv({"cooldown_days": 7, "prefer": "oldest"}, {"name": "memory", "path": "/x", "holds": {}}, NOW)
+        self.assertEqual(va.names_of(pl["picks"]), "opentelemetry-sdk 1.45.0 -> 1.45.2 (with opentelemetry-api 1.45.0 "
+                         "-> 1.45.2, opentelemetry-semantic-conventions 0.66b0 -> 0.66b2)")
+        self.assertTrue(any("has advisories of its own (GHSA-B)" in r for r in pl["report"]), pl["report"])
+        self.assertFalse(any("waits for the next run" in r for r in pl["report"]), pl["report"])
+
+    def test_choose_carry_reads_at_most_ten_releases(self):
+        rels = {f"1.{i}": [wheel("p", f"1.{i}", 30)] for i in range(30)}
+        read = []
+        ver, why = va.choose_carry("1.0", rels, lambda to: read.append(to) or va.Requirement("x<0"), NOW, 7, {})
+        self.assertIsNone(ver)
+        self.assertEqual((len(read), read[0]), (va.MAX_DEPENDENCY_UPGRADES, "1.1"))
+        self.assertIn("none of the 10 oldest", why)
+
+    def test_the_inspect_snippet_returns_requires(self):
+        with tempfile.TemporaryDirectory() as d:
+            di = Path(d, "opentelemetry_sdk-1.45.0.dist-info")
+            di.mkdir()
+            (di / "METADATA").write_text("Name: opentelemetry-sdk\nVersion: 1.45.0\n"
+                                         "Requires-Dist: opentelemetry-api==1.45.0\n")
+            p = subprocess.run([sys.executable, "-I", "-S", "-c", va.INSPECT, d], capture_output=True, text=True)
+            got = __import__("json").loads(p.stdout)
+            self.assertEqual(got[0]["requires"], ["opentelemetry-api==1.45.0"])
+
+
+class PreReleases(unittest.TestCase):
+    """A pre-release only for a package whose installed version is one; never a dev build."""
+
+    def test_only_when_the_installed_version_is_one(self):
+        r = {"2.0": [wheel("p", "2.0", 99)], "2.1b1": [wheel("p", "2.1b1", 30)], "2.1": [wheel("p", "2.1", 3)]}
+        spec = va.SpecifierSet(">=2.1b1")
+        self.assertIsNone(va.choose_dependency("2.0", spec, r, NOW, 7, {})[0])
+        r["2.0b3"] = [wheel("p", "2.0b3", 99)]
+        self.assertEqual(va.choose_dependency("2.0b3", spec, r, NOW, 7, {})[0], "2.1b1")
+        self.assertEqual(va.choose("2.0b3", [vuln("A", "2.1b1")], r, NOW, 7, {})[0], "2.1b1")
+        self.assertIsNone(va.choose("2.0", [vuln("A", "2.1b1")], r, NOW, 7, {})[0])
+
+    def test_never_a_dev_or_local_build(self):
+        r = {"0.66b0": [wheel("s", "0.66b0", 99)], "0.66b1.dev2": [wheel("s", "0.66b1.dev2", 30)]}
+        self.assertIsNone(va.choose_dependency("0.66b0", va.SpecifierSet(">0.66b0"), r, NOW, 7, {})[0])
+        self.assertFalse(va.candidate(va.Version("1.0+cpu"), True))
+
+
+class Strikes(unittest.TestCase):
+    def test_an_applied_version_loses_its_strikes(self):
+        led = {"rehearsal_failures": {"opentelemetry-api": {"1.45.1": 1}, "idna": {"3.7": 1}},
+               "live_failures": {"opentelemetry-api": {"1.45.1": 1, "1.45.2": 1}}}
+        p = {"key": "opentelemetry-api", "name": "opentelemetry-api", "from": "1.45.0", "to": "1.45.1",
+             "deps": [{"key": "idna", "name": "idna", "from": "3.6", "to": "3.8"}]}
+        va.clear_strikes(led, [p])
+        self.assertEqual(led, {"rehearsal_failures": {"idna": {"3.7": 1}},
+                               "live_failures": {"opentelemetry-api": {"1.45.2": 1}}})
+
+    def test_patch_wires_it_in(self):
+        src = (HERE / "venv-autopatch.py").read_text()
+        self.assertIn('report.append(f"patched {names}")\n        clear_strikes(led, picks)', src)
+        self.assertIn('pl.setdefault("struck", []).append(p["name"])', src)
+
+
 class Ledger(unittest.TestCase):
     def test_first_run_sees_no_drift(self):
         self.assertEqual(va.drift({"freeze": None}, {"a": {"version": "1"}}), {})
@@ -419,6 +781,16 @@ class WhatReachesTheOperator(unittest.TestCase):
         for outcome in ("nothing to apply", "patched", "plan", "report only", "failed", "rolled back"):
             self.assertFalse(va.needs_attention(outcome, "deferred"), outcome)  # failures route by `bad`
 
+    def test_a_strike_reaches_the_operator_whatever_the_outcome(self):
+        # 2026-10-25: opentelemetry-api struck, filelock deferred, the subject read "weekly report".
+        struck = ["opentelemetry-api"]
+        for outcome in ("deferred", "report only", "patched"):
+            self.assertTrue(va.needs_attention(outcome, None, struck), outcome)
+        self.assertEqual(va.attention_line("memory", "deferred", None, struck),
+                         "memory deferred, opentelemetry-api not applied")
+        self.assertEqual(va.attention_line("memory", "deferred", "deferred"), "memory deferred twice running")
+        self.assertEqual(va.attention_line("cad", "not applied", None, ["aiohttp"]), "cad not applied")
+
     def test_routing(self):
         r = {"mailbox": "news", "failures_mailbox": "operator"}
         self.assertEqual(va.report_route(r, 0, []), ("venv-autopatch: weekly report", ["news"]))
@@ -430,7 +802,8 @@ class WhatReachesTheOperator(unittest.TestCase):
 
     def test_the_run_feeds_them(self):
         src = (HERE / "venv-autopatch.py").read_text()
-        self.assertIn("if apply and needs_attention(outcome, previous):", src)
+        self.assertIn("if apply and needs_attention(outcome, previous, struck):", src)
+        self.assertIn('attention.append(attention_line(v["name"], outcome, previous, struck))', src)
         self.assertIn("deliver(cfg, text, bad, attention)", src)
         self.assertIn("subject, boxes = report_route(r, bad, attention)", src)
 

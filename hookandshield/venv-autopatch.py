@@ -18,13 +18,22 @@ A fix is applied automatically only if all of these hold, and is reported otherw
     has no known advisories itself, and hasn't failed this install's tests twice; of the releases
     that qualify it takes the oldest (`prefer = "oldest"`: the smallest change, public longest);
   - the installed version has a wheel on PyPI too, so the rollback can reinstall it;
+  - if the release requires a newer version of something installed (aiohttp 3.14.4 needs yarl
+    >= 1.25.1), each such upgrade passes the same rules, as the oldest release that satisfies the
+    requirement, and travels with the fix; so does an installed package whose own requirements
+    reject a version the batch installs (opentelemetry-sdk 1.45.0 needs opentelemetry-api==1.45.0),
+    as its oldest release that accepts the batch; a fix that needs a package added, downgraded or
+    moved to a new major is reported instead;
+  - a pre-release is taken only for a package whose installed version is one (opentelemetry's
+    semantic-conventions has only ever shipped betas);
   - the venv may be executed at all: its owner and test user are not root, and no uid but its owner
     can write the venv, its bin/ or site-packages/ (or the directory holding it). Otherwise the venv
     is audited and reported only.
 Each fix is rehearsed on a copy of the venv (wheels only, hash-checked, installed as the venv's
-owner, no dependency changes), then `pip check` and the venv's tests run on the copy. Only then is it
-applied to the live venv, while the units that use it are stopped or quiet; the quick checks and
-the health check run again, and any failure reinstalls the old versions and remembers the failed one.
+owner, no dependency changes but the upgrades it requires), then `pip check` and the venv's tests
+run on the copy. Only then is it applied to the live venv, while the units that use it are stopped
+or quiet; the quick checks and the health check run again, and any failure reinstalls the old
+versions and remembers the failed one.
 
 Runs as root: it installs as each venv's owner through runuser, and stops and starts units. No venv
 interpreter ever runs as root: what is installed is read with the system Python's importlib.metadata,
@@ -52,6 +61,7 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
+from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.tags import sys_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
@@ -261,14 +271,15 @@ from importlib.metadata import distributions
 out = []
 for d in distributions(path=[sys.argv[1]]):
     du = d.read_text("direct_url.json")
-    out.append({"name": d.metadata["Name"], "version": d.version, "direct_url": json.loads(du) if du else None})
+    out.append({"name": d.metadata["Name"], "version": d.version, "direct_url": json.loads(du) if du else None,
+                "requires": d.requires or []})
 print(json.dumps(out))
 """
 
 
 def inspect_venv(cfg, path):
-    """{canonical name: {name, version, from_pypi, why, public}}: the venv's dist-info read by the
-    system Python's importlib.metadata, as the audit user. Nothing from the venv executes."""
+    """{canonical name: {name, version, from_pypi, why, public, requires}}: the venv's dist-info read by
+    the system Python's importlib.metadata, as the audit user. Nothing from the venv executes."""
     p = must(run_as(cfg["audit_user"], "022", [sys.executable, "-I", "-S", "-c", INSPECT, site_packages(path)],
                     timeout=300), f"read the packages in {path}")
     out = {}
@@ -284,7 +295,7 @@ def inspect_venv(cfg, path):
             except InvalidVersion:
                 why = f"unparseable version {ver}"
         out[canonicalize_name(name)] = {"name": name, "version": ver, "from_pypi": not why, "why": why,
-                                        "public": public}
+                                        "public": public, "requires": d.get("requires") or []}
     return out
 
 
@@ -431,6 +442,13 @@ def pypi_releases(name):
         return json.load(r)["releases"]
 
 
+def pypi_requires(name, version):
+    """The release's Requires-Dist lines as PyPI records them. None (PyPI recorded none) reads as no
+    requirements: the rehearsal's pip check still catches one that was missed."""
+    with urllib.request.urlopen(f"{PYPI}/{name}/{version}/json", timeout=30) as r:
+        return json.load(r)["info"].get("requires_dist") or []
+
+
 def compatible_wheels(files):
     """The release's wheels this interpreter can install: [{filename, sha256, uploaded, yanked}]."""
     ok = []
@@ -480,13 +498,27 @@ def choose(installed, vulns, releases, now, cooldown_days, failed_versions, calv
             return None, f"{v['id']}: fixed only in a new major version ({min(fixes)})"
         need.append(min(same))
     floor = max(need)
+    return best_release(releases, lambda rv: in_scope(rv) and rv >= floor, now, cooldown_days,
+                        failed_versions, prefer, pre=cur.is_prerelease)
+
+
+def candidate(rv, pre):
+    """A release this tool may install: final, or a pre-release when `pre` (the installed version is
+    one); never a dev or local build."""
+    return not ((rv.is_prerelease and not pre) or rv.is_devrelease or rv.local)
+
+
+def best_release(releases, wanted, now, cooldown_days, failed_versions, prefer, pre=False):
+    """Of the releases `wanted` accepts (final ones; pre-releases too when `pre`), the oldest (or newest)
+    that hasn't failed here, has a non-yanked wheel for this Python and is out of the cool-down.
+    (version, wheels) or (None, reason)."""
     best, why_not = None, "no release fits"
     for s, files in releases.items():
         try:
             rv = Version(s)
         except InvalidVersion:
             continue
-        if rv.is_prerelease or rv.is_devrelease or rv.local or not in_scope(rv) or rv < floor:
+        if not candidate(rv, pre) or not wanted(rv):
             continue
         if s in failed_versions:
             why_not = f"{s} failed this install's tests twice"
@@ -505,6 +537,229 @@ def choose(installed, vulns, releases, now, cooldown_days, failed_versions, calv
     if best is None:
         return None, why_not
     return str(best[0]), best[1]
+
+
+def choose_dependency(installed, spec, releases, now, cooldown_days, failed_versions, calver=False):
+    """The upgrade of an installed package that a fix requires (`spec`, from the fix's Requires-Dist):
+    the oldest release that satisfies it, under a fix's rules and within the installed major version.
+    Always the oldest, whatever `prefer` says: the package has no advisory, it moves only as far as the
+    fix needs. Returns (version, wheels) or (None, reason)."""
+    cur = Version(installed)
+    pre = cur.is_prerelease
+    calver = calver or cur.major >= 1990
+    in_scope = (lambda x: True) if calver else (lambda x: x.major == cur.major)
+    newer = []
+    for s in releases:
+        try:
+            rv = Version(s)
+        except InvalidVersion:
+            continue
+        if rv > cur and candidate(rv, pre) and spec.contains(rv, prereleases=pre or None):
+            newer.append(rv)
+    if not newer:
+        return None, "no newer release satisfies it (it would need a downgrade, or no fitting release exists)"
+    if not any(in_scope(rv) for rv in newer):
+        return None, f"only a new major version satisfies it ({min(newer)})"
+    return best_release(releases, lambda rv: rv in newer and in_scope(rv), now, cooldown_days,
+                        failed_versions, "oldest", pre=pre)
+
+
+# A fix whose upgrades reach further than this is reported: the change is no longer a patch. Also the
+# most releases of one pinning package whose requirements are read before it is reported.
+MAX_DEPENDENCY_UPGRADES = 10
+
+
+def choose_carry(installed, releases, rejects, now, cooldown_days, failed_versions, calver=False):
+    """The release an installed package moves to because it pins a package the batch moves: the oldest
+    newer release, under a fix's rules and within the installed major version, whose own requirements
+    accept the batch. `rejects(version)` reads that release's requirements and returns the one that
+    rejects the batch, or None. Returns (version, wheels) or (None, reason)."""
+    cur = Version(installed)
+    pre = cur.is_prerelease
+    calver = calver or cur.major >= 1990
+    newer = []
+    for s in releases:
+        try:
+            rv = Version(s)
+        except InvalidVersion:
+            continue
+        if rv > cur and candidate(rv, pre) and (calver or rv.major == cur.major):
+            newer.append(rv)
+    why, read = "no newer release in its major version", 0
+    for rv in sorted(newer):
+        to, wheels = best_release(releases, lambda x: x == rv, now, cooldown_days, failed_versions, "oldest",
+                                  pre=pre)
+        if to is None:
+            why = wheels
+            continue
+        if read == MAX_DEPENDENCY_UPGRADES:
+            return None, f"none of the {read} oldest releases that fit the rules accepts it ({why})"
+        read += 1
+        r = rejects(to)
+        if r is None:
+            return to, wheels
+        why = f"{to} needs {r.name}{r.specifier}"
+    return None, why
+
+
+def unmet_requirements(requires, live, versions):
+    """[(canonical name, Requirement)]: each requirement that applies to this venv (markers evaluated
+    for this Python; extras left out, as pip check leaves them out) and that the version the batch
+    leaves (`versions`: name -> version, for what it changes) or the installed one doesn't satisfy. A
+    package that isn't installed is unmet. A line packaging can't read raises InvalidRequirement."""
+    out = []
+    for line in requires:
+        r = Requirement(line)
+        if r.marker and not r.marker.evaluate({"extra": ""}):
+            continue
+        key = canonicalize_name(r.name)
+        have = versions.get(key) or live.get(key, {}).get("version")
+        try:
+            ok = have is not None and r.specifier.contains(have, prereleases=True)
+        except InvalidVersion:
+            ok = False
+        if not ok:
+            out.append((key, r))
+    return out
+
+
+def rejecting(requires, versions, skip_unreadable=False):
+    """The first of `requires` that applies here (markers for this Python, extras left out, as pip check
+    reads them) and rejects the version the batch moves its package to (`versions`), or None. A line
+    packaging can't read raises, or is skipped with `skip_unreadable`."""
+    for line in requires:
+        try:
+            r = Requirement(line)
+            applies = not r.marker or r.marker.evaluate({"extra": ""})
+        except Exception:
+            if skip_unreadable:
+                continue
+            raise
+        q = canonicalize_name(r.name)
+        if applies and q in versions and not r.specifier.contains(versions[q], prereleases=True):
+            return r
+    return None
+
+
+def pins_against(live, versions):
+    """[(canonical name, Requirement)]: each installed package the batch doesn't move whose own
+    requirement (from its dist-info) rejects a version the batch moves a package to. A line packaging
+    can't read is skipped here; the rehearsal's pip check still sees it."""
+    out = []
+    for key, d in sorted(live.items()):
+        if key not in versions:
+            r = rejecting(d.get("requires", []), versions, skip_unreadable=True)
+            if r is not None:
+                out.append((key, r))
+    return out
+
+
+def dependency_upgrades(cfg, v, led, live, name, version, now, requires_of=None, releases_of=None):
+    """The upgrades of installed packages that `name` `version` needs before pip check passes: ([upgrade,
+    ...], "") or (None, why not). Two kinds, followed until neither finds more: what a release in the
+    batch requires (aiohttp 3.14.4 needs yarl >= 1.25.1), and an installed package that pins one the
+    batch moves (opentelemetry-sdk 1.45.0 pins opentelemetry-api==1.45.0), carried to its oldest release
+    that accepts the batch. Each upgrade is a pick of its own shape (key, name, from, to, wheels,
+    old_wheels) plus `for`, the release that needs it."""
+    requires_of = requires_of or pypi_requires
+    releases_of = releases_of or pypi_releases
+    planned, queue = {}, [(name, version)]
+    versions = {canonicalize_name(name): version}
+    reqs = {}   # (name, version) -> its requirements, read once
+
+    def requires(who, ver):
+        if (who, ver) not in reqs:
+            reqs[(who, ver)] = requires_of(who, ver)
+        return reqs[(who, ver)]
+
+    def move(key, need, for_, pick):
+        """Plan `key`'s upgrade under a fix's rules, `pick(installed, releases)` choosing the release:
+        "" when planned, else why not."""
+        d = live[key]
+        if key in versions:   # also what ends the loop below: every move adds a package, once
+            return f"{need}, but this fix already moves {d['name']} to {versions[key]}"
+        if not d["from_pypi"]:
+            return f"{need}; {d['name']} is {d['why']}"
+        if key in v["holds"]:
+            return f"{need}; {d['name']} is held in the config: {v['holds'][key]}"
+        if key in led["user_managed"]:
+            return f"{need}; {d['name']} is user-managed ({led['user_managed'][key]})"
+        if len(planned) >= MAX_DEPENDENCY_UPGRADES:
+            return f"it needs more than {MAX_DEPENDENCY_UPGRADES} dependency upgrades"
+        try:
+            rels = releases_of(d["name"])
+        except Exception as e:
+            return f"{need}; PyPI lookup of {d['name']} failed: {e}"
+        try:
+            to, wheels = pick(d["version"], rels)
+        except Exception as e:
+            return f"{need}; could not read {d['name']}'s requirements: {type(e).__name__}: {e}"
+        if to is None:
+            return f"{need}, installed {d['version']}: {wheels}"
+        old = compatible_wheels(rels.get(d["version"], []))
+        if not old:
+            return f"{need}; {d['name']} {d['version']} has no wheel on PyPI to roll back to"
+        planned[key] = {"key": key, "name": d["name"], "from": d["version"], "to": to, "wheels": wheels,
+                        "old_wheels": old, "for": for_}
+        versions[key] = to
+        queue.append((d["name"], to))
+        return ""
+
+    while True:
+        while queue:
+            who, ver = queue.pop(0)
+            try:
+                unmet = unmet_requirements(requires(who, ver), live, versions)
+            except Exception as e:
+                return None, f"could not read {who} {ver}'s requirements: {type(e).__name__}: {e}"
+            for key, r in unmet:
+                need = f"{who} {ver} needs {r.name}{r.specifier}"
+                if key not in live:
+                    return None, f"{need}, which isn't installed here (a fix that adds a package is reported, not applied)"
+                why = move(key, need, f"{who} {ver}", lambda cur, rels: choose_dependency(
+                    cur, r.specifier, rels, now, cfg["cooldown_days"], led["failed"].get(key, {}),
+                    calver=key in CALVER))
+                if why:
+                    return None, why
+        # What the batch breaks: one pinning package at a time, then its own requirements go round again.
+        pins = pins_against(live, versions)
+        if not pins:
+            # A member's own bound against a package a later move brought (x 2.0 needs y<2.9, then a carry's
+            # requirement moved y to 2.9): reported here, not found by the rehearsal's pip check as a strike.
+            for (who, ver), lines in reqs.items():
+                if versions.get(canonicalize_name(who)) != ver:   # a release read but not chosen
+                    continue
+                r = rejecting(lines, versions)
+                if r is not None:
+                    return None, (f"{who} {ver} needs {r.name}{r.specifier}, but this fix moves {r.name} to "
+                                  f"{versions[canonicalize_name(r.name)]}")
+            return list(planned.values()), ""
+        key, r = pins[0]
+        q = canonicalize_name(r.name)
+        d = live[key]
+        need = f"{d['name']} {d['version']} pins {r.name}{r.specifier}, which this fix moves to {versions[q]}"
+        why = move(key, need, f"{r.name} {versions[q]}", lambda cur, rels: choose_carry(
+            cur, rels, lambda to: rejecting(requires(d["name"], to), versions), now, cfg["cooldown_days"],
+            led["failed"].get(key, {}), calver=key in CALVER))
+        if why:
+            return None, why
+
+
+def one_version_each(picks):
+    """Keep the picks that agree on every package the batch installs; a pick that wants another version
+    of a package an earlier pick already moves waits for the next run, which plans it against the
+    venv this run leaves. Returns (kept, report lines)."""
+    kept, wanted, report = [], {}, []
+    for p in picks:
+        mine = {canonicalize_name(m["name"]): m for m in members([p])}
+        clash = next((k for k, m in mine.items() if wanted.get(k, m["to"]) != m["to"]), None)
+        if clash:
+            report.append(f"{names_of([p])}: waits for the next run: another fix here moves "
+                          f"{mine[clash]['name']} to {wanted[clash]}, this one needs {mine[clash]['to']}")
+            continue
+        wanted.update({k: m["to"] for k, m in mine.items()})
+        kept.append(p)
+    return kept, report
 
 
 # ---------- the ledger ----------
@@ -582,29 +837,60 @@ def plan_venv(cfg, v, now):
             report.append(f"{d['name']} {d['version']} ({ids}): {ver} would fix it, but {d['version']} has no "
                           f"wheel on PyPI to roll back to")
             continue
+        deps, why = dependency_upgrades(cfg, v, led, live, d["name"], ver, now)
+        if deps is None:
+            report.append(f"{d['name']} {d['version']} ({ids}): {ver} would fix it, but {why}")
+            continue
         picks.append({"key": n, "name": d["name"], "from": d["version"], "to": ver, "ids": ids,
-                      "wheels": wheels, "old_wheels": old_wheels})
+                      "wheels": wheels, "old_wheels": old_wheels, "deps": deps})
     # Installed from a URL, path or VCS: no PyPI version to audit, so named every run.
     for n, d in sorted(live.items()):
         if not d["from_pypi"] and not d["public"]:
             report.append(f"{d['name']}: not audited or patched: {d['why']}")
-    # The fixes must themselves be clean.
-    if picks:
-        clean = audit(cfg, {p["name"]: p["to"] for p in picks})
-        for p in list(picks):
-            if p["key"] in clean:
-                report.append(f"{p['name']} {p['from']} -> {p['to']}: the fix has advisories of its own "
-                              f"({', '.join(x['id'] for x in clean[p['key']])})")
-                picks.remove(p)
+    # One version of each package per run first, so the audit below sees every version that will install
+    # (its pins are keyed by name: two versions of one package would collapse to one, the other unaudited).
+    # The fixes must themselves be clean, and so must the upgrades they bring. A pick the audit drops frees
+    # the packages it moved, so the picks that waited on it are tried again (two advisories in one family:
+    # the first's carry lands on the very version the second fixes, and neither would ever apply).
+    ready = picks
+    while True:
+        picks, waiting = one_version_each(ready)
+        if not picks:
+            break
+        clean = audit(cfg, {m["name"]: m["to"] for p in picks for m in members([p])})
+        dropped = []
+        for p in picks:
+            dirty = [m for m in members([p]) if m["key"] in clean]
+            if dirty:
+                report.append(f"{names_of([p])}: " + "; ".join(
+                    f"{'the fix' if m is p else 'the upgrade of ' + m['name'] + ' to ' + m['to']} has advisories "
+                    f"of its own ({', '.join(x['id'] for x in clean[m['key']])})" for m in dirty))
+                dropped.append(p)
+        if not dropped:
+            break
+        ready = [p for p in ready if p not in dropped]
+    report += waiting
     return {"ledger": led, "live": live, "first": first, "findings": findings, "picks": picks,
             "report": report}
 
 
 # ---------- applying ----------
 
+def members(picks):
+    """Every package a batch installs, once: each fix, then the upgrades it requires. Two that want
+    different versions of one package never share a batch (one_version_each)."""
+    out = {}
+    for p in picks:
+        for m in [p] + p.get("deps", []):
+            seen = out.setdefault(canonicalize_name(m["name"]), m)
+            if seen["to"] != m["to"]:
+                raise Fail(f"{m['name']} is wanted at {seen['to']} and at {m['to']} in one batch")
+    return list(out.values())
+
+
 def req_lines(picks, which):
     out = []
-    for p in picks:
+    for p in members(picks):
         ver = p["to"] if which == "to" else p["from"]
         ws = p["wheels"] if which == "to" else p["old_wheels"]
         out.append(f"{p['name']}=={ver} " + " ".join(f"--hash=sha256:{w['sha256']}" for w in ws) + "\n")
@@ -641,7 +927,7 @@ def pip_install(v, python, req, wheels_dir):
 
 def versions_now(cfg, path, picks, which):
     live = inspect_venv(cfg, path)
-    for p in picks:
+    for p in members(picks):
         want = p["to"] if which == "to" else p["from"]
         got = live.get(p["key"], {}).get("version")
         if got != want:
@@ -779,7 +1065,10 @@ def healthy(v):
 
 
 def names_of(picks):
-    return ", ".join(f"{p['name']} {p['from']} -> {p['to']}" for p in picks)
+    def one(p):
+        deps = ", ".join(f"{d['name']} {d['from']} -> {d['to']}" for d in p.get("deps", []))
+        return f"{p['name']} {p['from']} -> {p['to']}" + (f" (with {deps})" if deps else "")
+    return ", ".join(one(p) for p in picks)
 
 
 def rehearse(cfg, v, picks, work, wheels, base_check, live_py, tdir):
@@ -806,6 +1095,16 @@ def rehearse(cfg, v, picks, work, wheels, base_check, live_py, tdir):
         raise Fail(f"rehearsal: {type(e).__name__}: {e}")
     finally:
         safe_rmtree(cfg, copy)
+
+
+def clear_strikes(led, picks):
+    """Forget the strikes of the versions now installed: they can't fail here again, and `status`
+    stopped being right about them the moment they went in."""
+    for m in members(picks):
+        for kind in ("rehearsal_failures", "live_failures"):
+            strikes = led.get(kind, {})
+            if strikes.get(m["key"], {}).pop(m["to"], None) is not None and not strikes[m["key"]]:
+                del strikes[m["key"]]
 
 
 def patch_venv(cfg, v, pl, work, report):
@@ -845,6 +1144,7 @@ def patch_venv(cfg, v, pl, work, report):
         if n >= 2:
             led["failed"].setdefault(p["key"], {})[p["to"]] = f"failed its rehearsal twice: {e}"[:300]
         report.append(f"NOT APPLIED {names_of([p])} (rehearsal failure {n} of 2): {e}")
+        pl.setdefault("struck", []).append(p["name"])
 
     check_stop("the rehearsal")
     try:
@@ -940,6 +1240,7 @@ def patch_venv(cfg, v, pl, work, report):
             report.append(f"ROLLED BACK {names}: {e}")
             return "rolled back"
         report.append(f"patched {names}")
+        clear_strikes(led, picks)
         return "patched" if len(picks) == tried else "partly patched"
     finally:
         for u in stopped:
@@ -958,9 +1259,19 @@ BAD = ("failed", "rolled back")
 ATTENTION = ("not applied", "partly patched", "audit only")
 
 
-def needs_attention(outcome, previous):
-    """True when this venv's outcome should reach the operator although nothing failed."""
-    return outcome in ATTENTION or (outcome == "deferred" and previous == "deferred")
+def needs_attention(outcome, previous, struck=()):
+    """True when this venv's outcome should reach the operator although nothing failed. `struck`: the
+    fixes that failed a rehearsal this run, whatever the venv's outcome (on 2026-10-25 one did while the
+    rest were deferred, and the subject read "weekly report")."""
+    return bool(struck) or outcome in ATTENTION or (outcome == "deferred" and previous == "deferred")
+
+
+def attention_line(name, outcome, previous, struck=()):
+    """The venv's part of the subject line."""
+    line = f"{name} {outcome}" + (" twice running" if outcome == "deferred" and previous == "deferred" else "")
+    if struck and outcome not in ATTENTION:
+        line += f", {', '.join(struck)} not applied"
+    return line
 
 
 def report_route(report_cfg, bad, attention):
@@ -1013,12 +1324,11 @@ def cmd_plan_or_run(cfg, args, apply):
             if not pl["picks"]:
                 outcome = "nothing to apply"
             elif why:
-                report += [f"{p['name']} {p['from']} -> {p['to']} ({p['ids']}) would fix it; not patched: "
-                           f"{why}" for p in pl["picks"]]
+                report += [f"{names_of([p])} ({p['ids']}) would fix it; not patched: {why}"
+                           for p in pl["picks"]]
                 outcome = "audit only"
             elif not apply:
-                report += [f"would rehearse and apply: {p['name']} {p['from']} -> {p['to']} ({p['ids']})"
-                           for p in pl["picks"]]
+                report += [f"would rehearse and apply: {names_of([p])} ({p['ids']})" for p in pl["picks"]]
                 outcome = "plan"
             else:
                 outcome = patch_venv(cfg, v, pl, work, report)
@@ -1045,8 +1355,9 @@ def cmd_plan_or_run(cfg, args, apply):
                 stop = True
                 report.append(f"{e} while recording this venv's result; the ledger may be a week behind")
         bad += outcome in BAD
-        if apply and needs_attention(outcome, previous):
-            attention.append(f"{v['name']} {outcome}" + (" twice running" if outcome == "deferred" else ""))
+        struck = pl.get("struck", []) if pl else []
+        if apply and needs_attention(outcome, previous, struck):
+            attention.append(attention_line(v["name"], outcome, previous, struck))
         lines.append(f"\n{v['name']} ({v['path']}): {outcome}")
         lines += [f"  - {r}" for r in report]
     text = "\n".join(lines)

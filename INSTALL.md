@@ -483,7 +483,9 @@ journal: under systemd it writes only to `/var/log/newstron/fetcher.log`) ends
 **Weekly venv patching** (`hookandshield/venv-autopatch.py`; needs the news feed above, whose venv
 holds `pip-audit`). Once a week (Sundays 04:30) it audits the memory and news venvs and applies the
 fixes it is allowed to: a PyPI release in the installed major version that fixes every advisory, at
-least 7 days old, with a wheel for this Python; of those, the oldest. Each fix is rehearsed on a copy
+least 7 days old, with a wheel for this Python; of those, the oldest. If the fix needs newer versions of
+packages already installed (one its release requires, or one whose own requirements reject the new
+version), they move with it under the same rules, each as the oldest release that fits. Each fix is rehearsed on a copy
 of the venv first (`pip check`, the venv's own tests, and for the memory venv a gate that the
 embedding vectors don't move), then applied while the venv's services are stopped or quiet; any
 failure puts the old versions back. Packages not from PyPI, and anything changed by hand since the

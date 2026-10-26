@@ -1,5 +1,41 @@
 # Changes
 
+## v0.1.6
+
+- **The agent panes use Commit Mono**, weight 600 with bold at 700, served by the portal itself, so
+  every device shows the same font. Four woff2 files and the font's license are in
+  `portal/portal/fonts/`; the page loads them in each pane and refits the terminal once they are in.
+  After the upgrade, hard-refresh the portal (a reload that skips the browser's cache) to load them.
+- **The "Co" mark on its own**, square, in dark ink and light ink: `docs/logo.svg` and
+  `docs/logo-dark.svg`, for listings and avatars.
+- **Weekly venv patching** (`hookandshield/venv-autopatch.py`) can apply a fix that needs other
+  packages to move. Before, it installed each fix alone, so such a fix failed its rehearsal and was
+  skipped after the second week. Now these move with it, under the same rules as a fix, each as the
+  oldest release that fits:
+  - a newer version of a package the fix's release requires (aiohttp 3.14.4 needs
+    yarl >= 1.25.1);
+  - an installed package whose own requirements reject a version the batch installs
+    (opentelemetry-sdk 1.45.0 requires opentelemetry-api==1.45.0, so a fix to the API moves the SDK
+    too).
+
+  A fix that would need a package added, downgraded or moved to a new major version is still
+  reported, not applied. A pre-release is installed only for a package whose installed version is
+  one. When a fix is turned down because something it brings has an advisory of its own, the fixes
+  that were waiting on it are planned again in the same run. A fix that fails its rehearsal now
+  reaches the operator's mailbox even when the rest of that venv's run was only deferred, and a
+  version's failure count is cleared once it is installed.
+- **`portal/install/deploy.sh`** checks the dashboard's fonts on the port the dashboard's unit
+  sets (in the unit, a drop-in or its environment file), where it asked the default port and
+  warned. A host whose dashboard unit is not `dashboard.service` names it in `site.env`
+  (`DASHBOARD_UNIT=`); a host without the dashboard skips the check. The portal's font check now
+  also requires the password's `Basic` challenge on its 401.
+- **`docs/SECURITY.md`** is corrected in two places. The orchestrator's hook route can do more than
+  mark an agent busy: any local account can end an agent's turn as the orchestrator sees it, clear
+  its busy mark or flag it as stopped at its usage limit (nothing it carries is typed into a pane).
+  And the memory server's agent door (`/agent/mcp`, a token per agent, with
+  `MEMORY_IDENTITY_ENFORCE`) is now described; the installer does not set it up yet.
+  `docs/LAYOUT.md` lists its variables.
+
 ## v0.1.5
 
 - **The portal's mark** is now "Co": the Selectric C with a small o set in its opening, in the page's

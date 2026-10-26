@@ -513,6 +513,33 @@
       b.setAttribute("aria-checked", String(b.dataset.mode === themeMode));
     TERMS.forEach(paintTerm);
   }
+  // --- terminal font -----------------------------------------------------------
+  // Commit Mono at weight 600, bold 700 (OFL, fonts/COMMIT-MONO-OFL.txt), served
+  // from /fonts/ like the chrome's faces. The pane is ttyd's own page, so tokens.css never reaches it: the faces
+  // are registered in the pane's document, and the font is set only once they have
+  // loaded, because xterm sizes its cells from the font in use. Then ttyd refits the
+  // grid to the new cell size: ttyd 1.7.7 puts fit() on window.term, and its window
+  // "resize" listener calls the same fit if that ever moves.
+  // Glyphs Commit Mono lacks (some of Claude Code's symbols) fall back down the
+  // list; a face that fails to load leaves the pane on ttyd's default font.
+  const TERM_FONT = '"Commit Mono", "JetBrains Mono", ui-monospace, monospace';
+  const TERM_FACES = [["600", "normal", "commit-mono-600-regular"], ["700", "normal", "commit-mono-700-regular"],
+                      ["600", "italic", "commit-mono-600-italic"], ["700", "italic", "commit-mono-700-italic"]];
+  const setOpt = (term, k, v) => { try { term.options[k] = v; } catch { try { term.setOption(k, v); } catch {} } };
+  const fontTerm = (term, win) => {
+    try {
+      const faces = TERM_FACES.map(([weight, style, file]) =>
+        new win.FontFace("Commit Mono", `url(/fonts/${file}.woff2) format("woff2")`, { weight, style }));
+      faces.forEach(f => win.document.fonts.add(f));
+      Promise.all(faces.map(f => f.load())).then(() => {
+        setOpt(term, "fontWeight", "600");
+        setOpt(term, "fontWeightBold", "700");
+        setOpt(term, "fontFamily", TERM_FONT);
+        if (typeof term.fit === "function") term.fit(); else win.dispatchEvent(new win.Event("resize"));
+      }).catch(e => console.warn("terminal font not loaded; ttyd's default kept", e));
+    } catch (e) { console.warn("terminal font skipped", e); }
+  };
+
   for (const b of document.querySelectorAll("#theme-seg button")) {
     b.addEventListener("click", () => {
       themeMode = b.dataset.mode;
@@ -640,6 +667,7 @@
         paneTerm = term;
         TERMS.add(term);       // a pane that reconnects re-enters here with a new instance
         paintTerm(term);       // the unit baked one palette; this pane may owe the other
+        fontTerm(term, iframe.contentWindow);
         // Copy path: Claude Code owns the mouse in these panes and does its
         // own selection. On release it runs `tmux load-buffer -w`, tmux
         // forwards it as an OSC 52 escape, and we catch it here and place it

@@ -197,13 +197,16 @@ curl -s "http://127.0.0.1:$CHORUSD_PORT/agents" && echo
 # perfect while the dashboard is wrong. Nobody would think to check it; check it here.
 FONT=archivo-latin.woff2
 probe() {  # $1 = label, $2 = url, $3 = hard|soft, $4 = the font's file, for a surface behind a password
-  code=$(curl -sk -o /dev/null -w '%{http_code}' -m 5 "$2" 2>/dev/null || echo 000)
+  # The headers, then the status code on a line of its own (000 when nothing answers).
+  out=$(curl -sk -o /dev/null -D - -w '\n%{http_code}' -m 5 "$2" 2>/dev/null || true)
+  code=$(printf '%s\n' "$out" | tail -n 1); [ -n "$code" ] || code=000
   if [ "$code" = 200 ]; then
     echo "OK   $1 serves /fonts/$FONT"
-  elif [ "$code" = 401 ] && [ -n "${4:-}" ] && [ -f "$4" ]; then
-    # The portal asks for its password on /fonts/ too, so this unauthenticated probe gets 401: Caddy
-    # answers, and the file it serves from is in place.
-    echo "OK   $1 answers behind its password (HTTP 401), and $4 is in place"
+  elif [ "$code" = 401 ] && [ -n "${4:-}" ] && [ -f "$4" ] && grep -qi '^www-authenticate:[[:space:]]*basic' <<<"$out"; then
+    # The portal asks for its password on /fonts/ too, so this unauthenticated probe gets 401 with the
+    # password's Basic challenge: Caddy answers, and the file it serves from is in place. A 401 without
+    # that challenge is not the portal's password.
+    echo "OK   $1 answers behind its password (HTTP 401, Basic), and $4 is in place"
   elif [ "$3" = hard ]; then
     echo "STOP $1 does not serve /fonts/$FONT (HTTP $code): tokens.css would fall back to the system font" >&2
     exit 1
@@ -213,5 +216,31 @@ probe() {  # $1 = label, $2 = url, $3 = hard|soft, $4 = the font's file, for a s
   fi
 }
 probe "portal (https://${LAN_IP:-127.0.0.1})" "https://${LAN_IP:-127.0.0.1}/fonts/$FONT" hard "$DEST/portal/fonts/$FONT"
-probe "dashboard (127.0.0.1:${DASHBOARD_PORT:-8767})" "http://127.0.0.1:${DASHBOARD_PORT:-8767}/fonts/$FONT" soft
+# --- dashboard port
+# The port is the one systemd starts the dashboard with: DASHBOARD_PORT in its Environment= (a drop-in
+# may set it), else in its EnvironmentFile (the shipped unit reads /etc/dashboard.env), else the
+# dashboard's default. Its unit is dashboard.service unless site.env's DASHBOARD_UNIT names another; a
+# host without it skips the probe. (2026-10-20: this probe read its own environment, asked the default
+# port, got no answer and warned, while the dashboard served the font on the port its unit sets.)
+dunit=${DASHBOARD_UNIT:-dashboard.service}
+dport=""
+if [ "$(systemctl show "$dunit" -p LoadState --value 2>/dev/null)" = loaded ]; then
+  dport=$(systemctl show "$dunit" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^DASHBOARD_PORT=//p' | tail -n 1 || true)
+  if [ -z "$dport" ]; then
+    while IFS= read -r f; do
+      f=${f% (ignore_errors=*}
+      if [ -r "$f" ]; then
+        p=$(sed -n "s/^[[:space:]]*DASHBOARD_PORT=[\"']\{0,1\}\([0-9]\{1,\}\).*/\1/p" "$f" | tail -n 1)
+        [ -z "$p" ] || dport=$p
+      fi
+    done < <(systemctl show "$dunit" -p EnvironmentFiles --value 2>/dev/null || true)
+  fi
+  [[ $dport =~ ^[0-9]{2,5}$ ]] || dport=8767
+fi
+# --- end dashboard port
+if [ -n "$dport" ]; then
+  probe "dashboard ($dunit, 127.0.0.1:$dport)" "http://127.0.0.1:$dport/fonts/$FONT" soft
+else
+  echo "NOTE no $dunit on this host (DASHBOARD_UNIT in site.env names the dashboard's unit): its font probe is skipped"
+fi
 echo "Done. Hard-refresh the portal (Ctrl+Shift+R)."
